@@ -1,0 +1,73 @@
+# Spec 1: Create patcher-config.json Structure
+
+**File**: `patcher-config.json`
+
+**Purpose**: Define configuration schema for version mappings, cache settings, and installation defaults.
+
+**Structure**:
+```json
+{
+  "versionMappings": {
+    "sqlite3": {
+      "5.1.7": {
+        "windowsBinary": {
+          "repo": "TryGhost/node-sqlite3",
+          "assetPattern": ".*windows.*node_sqlite3.*\\.node",
+          "releaseTag": "v5.1.7"
+        }
+      },
+      "default": {
+        "windowsBinary": {
+          "repo": "TryGhost/node-sqlite3",
+          "assetPattern": ".*windows.*node_sqlite3.*\\.node",
+          "releaseTag": "latest"
+        }
+      }
+    },
+    "merkleTree": {
+      "default": {
+        "windowsBinary": {
+          "repo": "btc-vision/rust-merkle-tree",
+          "assetPattern": "merkle-tree-napi\\.win32-x64-msvc\\.node",
+          "releaseTag": "latest"
+        }
+      }
+    },
+    "ripgrep": {
+      "default": {
+        "windowsBinary": {
+          "repo": "BurntSushi/ripgrep",
+          "assetPattern": "ripgrep-.*-x86_64-pc-windows-msvc\\.zip",
+          "releaseTag": "latest"
+        }
+      }
+    }
+  },
+  "cache": {
+    "directory": "%LOCALAPPDATA%\\cursor-agent-patcher\\cache",
+    "enabled": true,
+    "validateOnUse": true
+  },
+  "installation": {
+    "defaultPath": ".\\cursor-agent",
+    "createLauncher": true,
+    "launcherName": "cursor-agent.bat"
+  },
+  "cursorAgent": {
+    "installScriptUrl": "https://cursor.com/install",
+    "downloadBaseUrl": "https://downloads.cursor.com/lab",
+    "sourceOs": "darwin",
+    "sourceArch": "arm64"
+  }
+}
+```
+
+**Validation**:
+- JSON must be valid and parseable
+- All required top-level keys must exist
+- Asset patterns must be valid regex
+- Paths must use Windows-style separators
+
+**Dependencies**: None
+
+**Success Criteria**: File can be loaded and parsed without errors, all required keys present
