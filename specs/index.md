@@ -33,39 +33,39 @@ Download and caching system - needed to fetch Windows binaries.
 
 Registry and application framework - core patching infrastructure.
 
-- [Spec 013: Patch Registry Data Structure](spec-013-patch-registry-structure.md)
-- [Spec 014: Find Files Matching Pattern Function](spec-014-find-files-matching-pattern.md)
-- [Spec 015: Resolve Patch Dependencies Function](spec-015-resolve-patch-dependencies.md)
-- [Spec 016: Apply Patch Function](spec-016-apply-patch.md)
+- [x] [Spec 013: Patch Registry Data Structure](spec-013-patch-registry-structure.md)
+- [x] [Spec 014: Find Files Matching Pattern Function](spec-014-find-files-matching-pattern.md)
+- [x] [Spec 015: Resolve Patch Dependencies Function](spec-015-resolve-patch-dependencies.md)
+- [x] [Spec 016: Apply Patch Function](spec-016-apply-patch.md)
 
 ## Individual Patches
 
 Implement each patch type - specific patching logic.
 
-- [Spec 017: Platform Detection Patch](spec-017-platform-detection-patch.md)
-- [Spec 018: Merkle Tree Module Replacement Patch](spec-018-merkle-tree-module-patch.md)
-- [Spec 019: SQLite3 Module Replacement Patch](spec-019-sqlite3-module-patch.md)
-- [Spec 020: RipGrep Binary Replacement Patch](spec-020-ripgrep-binary-patch.md)
-- [Spec 021: Register All Patches Function](spec-021-register-standard-patches.md)
+- [x] [Spec 017: Platform Detection Patch](spec-017-platform-detection-patch.md)
+- [x] [Spec 018: Merkle Tree Module Replacement Patch](spec-018-merkle-tree-module-patch.md)
+- [x] [Spec 019: SQLite3 Module Replacement Patch](spec-019-sqlite3-module-patch.md)
+- [x] [Spec 020: RipGrep Binary Replacement Patch](spec-020-ripgrep-binary-patch.md)
+- [x] [Spec 021: Register All Patches Function](spec-021-register-standard-patches.md)
 
 ## Workflow
 
 Main orchestration - ties everything together.
 
-- [Spec 022: Download Cursor Agent Package Function](spec-022-download-cursor-package.md)
-- [Spec 023: Extract Package Archive Function](spec-023-extract-package-archive.md)
-- [Spec 024: Build Patch Context Function](spec-024-build-patch-context.md)
-- [Spec 025: Main Patching Workflow Function](spec-025-main-patching-workflow.md)
+- [x] [Spec 022: Download Cursor Agent Package Function](spec-022-download-cursor-package.md)
+- [x] [Spec 023: Extract Package Archive Function](spec-023-extract-package-archive.md)
+- [x] [Spec 024: Build Patch Context Function](spec-024-build-patch-context.md)
+- [x] [Spec 025: Main Patching Workflow Function](spec-025-main-patching-workflow.md)
 
 ## Utilities
 
 Helpers and main script - user-facing components.
 
-- [Spec 026: Create Launcher Script Function](spec-026-create-launcher-script.md)
-- [Spec 027: Detect Windows Architecture Function](spec-027-detect-windows-architecture.md)
-- [Spec 028: Main Script Entry Point](spec-028-main-script-entry-point.md)
-- [Spec 029: Module Export Configuration](spec-029-module-export-configuration.md)
-- [Spec 030: Error Message Standardization](spec-030-error-message-standardization.md)
+- [x] [Spec 026: Create Launcher Script Function](spec-026-create-launcher-script.md)
+- [x] [Spec 027: Detect Windows Architecture Function](spec-027-detect-windows-architecture.md)
+- [x] [Spec 028: Main Script Entry Point](spec-028-main-script-entry-point.md)
+- [x] [Spec 029: Module Export Configuration](spec-029-module-export-configuration.md)
+- [x] [Spec 030: Error Message Standardization](spec-030-error-message-standardization.md)
 
 ## Auto-Update Patching
 
