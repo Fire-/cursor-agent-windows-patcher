@@ -4683,8 +4683,454 @@ function Invoke-PatchExistingInstallation {
     return Invoke-CursorAgentPatch -PatchExistingInstallation $InstallationPath -Force:$Force
 }
 
+function Resolve-LauncherTarget {
+    <#
+    .SYNOPSIS
+    Resolve the target path of a cursor-agent launcher (symlink, shortcut, or script).
+    
+    .DESCRIPTION
+    Attempts multiple methods to resolve the actual target path of a launcher:
+    - PowerShell link resolution (symlinks/junctions)
+    - Windows shortcut (.lnk) files
+    - Script file parsing (bash/PowerShell scripts)
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$LauncherPath
+    )
+    
+    try {
+        if (-not (Test-Path -Path $LauncherPath)) {
+            throw "Resolve-LauncherTarget: Launcher path does not exist: '$LauncherPath'"
+        }
+        
+        $launcherItem = Get-Item -Path $LauncherPath -Force -ErrorAction Stop
+        
+        # Method 1: PowerShell Link Resolution (symlinks/junctions)
+        if ($launcherItem.LinkType) {
+            $target = $launcherItem.Target
+            if ($target) {
+                Write-Verbose "Resolved via link type '$($launcherItem.LinkType)': $target"
+                return $target
+            }
+        }
+        
+        # Method 2: Windows Shortcut (.lnk files)
+        if ($LauncherPath -match '\.lnk$') {
+            try {
+                $shell = New-Object -ComObject WScript.Shell -ErrorAction Stop
+                $shortcut = $shell.CreateShortcut($LauncherPath)
+                $target = $shortcut.TargetPath
+                if ($target) {
+                    Write-Verbose "Resolved via Windows shortcut: $target"
+                    return $target
+                }
+            }
+            catch {
+                Write-Verbose "Failed to resolve via shortcut: $_"
+            }
+        }
+        
+        # Method 3: Read Script Content (bash/PowerShell scripts)
+        if ($launcherItem.Extension -in @('.sh', '.ps1', '.bat', '.cmd', '') -or $null -eq $launcherItem.Extension) {
+            try {
+                $scriptContent = Get-Content -Path $LauncherPath -Raw -ErrorAction Stop
+                
+                # Look for patterns like: exec "$SCRIPT_DIR/index.js" or node "$SCRIPT_DIR/index.js"
+                $patterns = @(
+                    'exec\s+["'']\$SCRIPT_DIR/index\.js["'']',
+                    'node\s+["'']\$SCRIPT_DIR/index\.js["'']',
+                    'bun\s+["'']\$SCRIPT_DIR/index\.js["'']',
+                    'exec\s+["'']([^"'']+)/index\.js["'']',
+                    'node\s+["'']([^"'']+)/index\.js["'']',
+                    'bun\s+["'']([^"'']+)/index\.js["'']'
+                )
+                
+                foreach ($pattern in $patterns) {
+                    if ($scriptContent -match $pattern) {
+                        if ($Matches[1]) {
+                            # Absolute path found
+                            $target = $Matches[1] + '\index.js'
+                            if (Test-Path -Path $target) {
+                                Write-Verbose "Resolved via script pattern '$pattern': $target"
+                                return $target
+                            }
+                        }
+                        else {
+                            # Need to resolve $SCRIPT_DIR
+                            if ($scriptContent -match '\$SCRIPT_DIR\s*=\s*["'']([^"'']+)["'']') {
+                                $scriptDir = $Matches[1]
+                                $target = Join-Path -Path $scriptDir -ChildPath 'index.js'
+                                if (Test-Path -Path $target) {
+                                    Write-Verbose "Resolved via script with SCRIPT_DIR: $target"
+                                    return $target
+                                }
+                            }
+                            # Try relative to launcher directory
+                            $launcherDir = Split-Path -Path $LauncherPath -Parent
+                            $target = Join-Path -Path $launcherDir -ChildPath 'index.js'
+                            if (Test-Path -Path $target) {
+                                Write-Verbose "Resolved via script relative path: $target"
+                                return $target
+                            }
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Failed to parse script content: $_"
+            }
+        }
+        
+        # Method 4: Junction/Symlink via cmd dir
+        try {
+            $dirOutput = cmd /c "dir `"$LauncherPath`" /A:L" 2>&1
+            if ($dirOutput -match '<SYMLINK|JUNCTION>') {
+                # Try to extract target from output or use Get-Item with -Force
+                $targetItem = Get-Item -Path $LauncherPath -Force -ErrorAction Stop
+                if ($targetItem.Target) {
+                    Write-Verbose "Resolved via junction/symlink: $($targetItem.Target)"
+                    return $targetItem.Target
+                }
+            }
+        }
+        catch {
+            Write-Verbose "Failed to resolve via dir command: $_"
+        }
+        
+        # If all methods fail, throw
+        throw "Resolve-LauncherTarget: Could not resolve target for launcher: '$LauncherPath'"
+    }
+    catch {
+        Write-Error "Resolve-LauncherTarget: Failed to resolve launcher target. Error: $_"
+        throw
+    }
+}
+
+function Get-CursorAgentVersionDirectory {
+    <#
+    .SYNOPSIS
+    Detect the cursor-agent version directory by resolving the launcher symlink/shortcut target.
+    
+    .DESCRIPTION
+    Finds the cursor-agent launcher (cursor-agent or agent in PATH or common locations),
+    resolves its target (symlink, shortcut, or script), and extracts the version directory
+    path from the target.
+    
+    .PARAMETER LauncherPath
+    Optional: specific launcher path. If not provided, searches PATH and common locations.
+    
+    .OUTPUTS
+    string. Returns the absolute path to the version directory.
+    
+    .EXAMPLE
+    $versionDir = Get-CursorAgentVersionDirectory
+    # Returns: "C:\Users\user\.local\share\cursor-agent\versions\2026.01.23-916f423"
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$LauncherPath
+    )
+    
+    try {
+        # Step 1: Find Launcher
+        if ([string]::IsNullOrWhiteSpace($LauncherPath)) {
+            # Search PATH for cursor-agent or agent
+            $launcherCommands = @('cursor-agent', 'agent')
+            $foundLauncher = $null
+            
+            foreach ($cmd in $launcherCommands) {
+                try {
+                    $command = Get-Command -Name $cmd -ErrorAction Stop
+                    $foundLauncher = $command.Source
+                    Write-Verbose "Found launcher in PATH: $foundLauncher"
+                    break
+                }
+                catch {
+                    # Continue searching
+                }
+            }
+            
+            # If not found in PATH, check common locations
+            if (-not $foundLauncher) {
+                $commonPaths = @(
+                    "$env:USERPROFILE\.local\bin\cursor-agent",
+                    "$env:USERPROFILE\.local\bin\agent",
+                    "$env:LOCALAPPDATA\cursor-agent\bin\cursor-agent",
+                    "$env:LOCALAPPDATA\cursor-agent\bin\agent"
+                )
+                
+                foreach ($path in $commonPaths) {
+                    if (Test-Path -Path $path) {
+                        $foundLauncher = $path
+                        Write-Verbose "Found launcher in common location: $foundLauncher"
+                        break
+                    }
+                }
+            }
+            
+            if (-not $foundLauncher) {
+                throw "Get-CursorAgentVersionDirectory: Cannot find cursor-agent launcher. Searched PATH and common locations: $($commonPaths -join ', ')"
+            }
+            
+            $LauncherPath = $foundLauncher
+        }
+        
+        # Validate launcher exists
+        if (-not (Test-Path -Path $LauncherPath)) {
+            throw "Get-CursorAgentVersionDirectory: Launcher path does not exist: '$LauncherPath'"
+        }
+        
+        # Step 2: Resolve Target
+        $targetPath = Resolve-LauncherTarget -LauncherPath $LauncherPath
+        
+        if (-not $targetPath) {
+            # Fallback: Try to find versions directory
+            Write-Verbose "Symlink resolution failed, trying fallback strategy"
+            
+            # Get parent directory of launcher
+            $launcherDir = Split-Path -Path $LauncherPath -Parent
+            
+            # Search for versions directory in common locations
+            $versionsDirs = @(
+                "$env:USERPROFILE\.local\share\cursor-agent\versions",
+                "$env:LOCALAPPDATA\cursor-agent\versions"
+            )
+            
+            foreach ($versionsDir in $versionsDirs) {
+                if (Test-Path -Path $versionsDir -PathType Container) {
+                    # Find newest directory by modification time
+                    $versionDirs = Get-ChildItem -Path $versionsDir -Directory | Sort-Object LastWriteTime -Descending
+                    if ($versionDirs.Count -gt 0) {
+                        $targetPath = $versionDirs[0].FullName
+                        Write-Verbose "Using fallback: newest version directory: $targetPath"
+                        break
+                    }
+                }
+            }
+            
+            if (-not $targetPath) {
+                throw "Get-CursorAgentVersionDirectory: Could not resolve version directory. Launcher: '$LauncherPath'"
+            }
+        }
+        
+        # Step 3: Extract Version Directory
+        # Target typically points to: VERSIONS_DIR/VERSION/cursor-agent or VERSIONS_DIR/VERSION/agent
+        # Or directly to: VERSIONS_DIR/VERSION/index.js
+        $versionDir = $null
+        
+        if (Test-Path -Path $targetPath -PathType Leaf) {
+            # Target is a file (e.g., index.js), get parent directory
+            $versionDir = Split-Path -Path $targetPath -Parent
+        }
+        elseif (Test-Path -Path $targetPath -PathType Container) {
+            # Target is already a directory
+            $versionDir = $targetPath
+        }
+        else {
+            # Target path doesn't exist, try parent
+            $versionDir = Split-Path -Path $targetPath -Parent
+        }
+        
+        # Step 4: Validate Installation
+        if (-not (Test-Path -Path $versionDir -PathType Container)) {
+            throw "Get-CursorAgentVersionDirectory: Version directory does not exist: '$versionDir'"
+        }
+        
+        $indexJsPath = Join-Path -Path $versionDir -ChildPath 'index.js'
+        if (-not (Test-Path -Path $indexJsPath -PathType Leaf)) {
+            throw "Get-CursorAgentVersionDirectory: Invalid installation - index.js not found in: '$versionDir'"
+        }
+        
+        # Return absolute path
+        $absoluteVersionDir = (Resolve-Path -Path $versionDir).Path
+        Write-Verbose "Resolved version directory: $absoluteVersionDir"
+        return $absoluteVersionDir
+    }
+    catch {
+        Write-Error "Get-CursorAgentVersionDirectory: Failed to detect version directory. Error: $_"
+        throw
+    }
+}
+
+function Invoke-CursorAgentUpdateWithPatch {
+    <#
+    .SYNOPSIS
+    Intercept cursor-agent update command, execute the real update, then automatically patch the newly updated version.
+    
+    .DESCRIPTION
+    Finds the real cursor-agent executable, executes the update command, waits for symlink update,
+    detects the new version directory, checks if already patched, and patches if needed.
+    
+    .PARAMETER UpdateArguments
+    Additional arguments to pass to cursor-agent update command.
+    
+    .PARAMETER WhatIf
+    If specified, shows what would be done without actually executing.
+    
+    .PARAMETER Force
+    Force re-patch even if already patched.
+    
+    .OUTPUTS
+    hashtable. Returns result summary with UpdateSuccess, UpdateExitCode, UpdateError, PatchSuccess,
+    PatchResult, VersionDirectory, and AlreadyPatched fields.
+    
+    .EXAMPLE
+    $result = Invoke-CursorAgentUpdateWithPatch
+    if ($result.UpdateSuccess -and $result.PatchSuccess) {
+        Write-Host "Update and patch completed successfully!"
+    }
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string[]]$UpdateArguments,
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$WhatIf,
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$Force
+    )
+    
+    $result = @{
+        UpdateSuccess = $false
+        UpdateExitCode = -1
+        UpdateError = $null
+        PatchSuccess = $false
+        PatchResult = $null
+        VersionDirectory = $null
+        AlreadyPatched = $false
+    }
+    
+    try {
+        # Step 1: Find the real cursor-agent executable/script
+        $launcherCommands = @('cursor-agent', 'agent')
+        $foundLauncher = $null
+        
+        foreach ($cmd in $launcherCommands) {
+            try {
+                $command = Get-Command -Name $cmd -ErrorAction Stop
+                $foundLauncher = $command.Source
+                Write-Verbose "Found cursor-agent launcher: $foundLauncher"
+                break
+            }
+            catch {
+                # Continue searching
+            }
+        }
+        
+        # If not found in PATH, check common locations
+        if (-not $foundLauncher) {
+            $commonPaths = @(
+                "$env:USERPROFILE\.local\bin\cursor-agent",
+                "$env:USERPROFILE\.local\bin\agent",
+                "$env:LOCALAPPDATA\cursor-agent\bin\cursor-agent",
+                "$env:LOCALAPPDATA\cursor-agent\bin\agent"
+            )
+            
+            foreach ($path in $commonPaths) {
+                if (Test-Path -Path $path) {
+                    $foundLauncher = $path
+                    Write-Verbose "Found cursor-agent launcher in common location: $foundLauncher"
+                    break
+                }
+            }
+        }
+        
+        if (-not $foundLauncher) {
+            throw "Invoke-CursorAgentUpdateWithPatch: Cannot find cursor-agent executable. Searched PATH and common locations. Please ensure cursor-agent is installed and in your PATH."
+        }
+        
+        # Step 2: Execute cursor-agent update command
+        Write-Verbose "Executing: $foundLauncher update $($UpdateArguments -join ' ')"
+        
+        if ($WhatIf) {
+            Write-Host "WhatIf: Would execute: $foundLauncher update $($UpdateArguments -join ' ')" -ForegroundColor Yellow
+            $result.UpdateSuccess = $true
+            $result.UpdateExitCode = 0
+            return $result
+        }
+        
+        $processArgs = @('update') + $UpdateArguments
+        $process = Start-Process -FilePath $foundLauncher -ArgumentList $processArgs -Wait -PassThru -NoNewWindow
+        
+        $result.UpdateExitCode = $process.ExitCode
+        
+        # Step 3: Check exit code
+        if ($result.UpdateExitCode -ne 0) {
+            $result.UpdateSuccess = $false
+            $result.UpdateError = "cursor-agent update exited with code $($result.UpdateExitCode)"
+            Write-Warning "Update command failed: $($result.UpdateError)"
+            return $result
+        }
+        
+        $result.UpdateSuccess = $true
+        Write-Verbose "Update command completed successfully"
+        
+        # Step 4: Wait briefly for symlink update to complete
+        Start-Sleep -Milliseconds 300
+        
+        # Step 5: Detect new version directory
+        try {
+            $versionDirectory = Get-CursorAgentVersionDirectory
+            $result.VersionDirectory = $versionDirectory
+            Write-Verbose "Detected version directory: $versionDirectory"
+        }
+        catch {
+            Write-Warning "Invoke-CursorAgentUpdateWithPatch: Failed to detect version directory after update. Error: $_"
+            $result.UpdateError = "Update succeeded but version detection failed: $_"
+            return $result
+        }
+        
+        # Step 6: Check if already patched
+        try {
+            $patchStatus = Test-InstallationPatched -InstallationPath $versionDirectory
+            $result.AlreadyPatched = $patchStatus.IsPatched
+            
+            if ($result.AlreadyPatched -and -not $Force) {
+                Write-Verbose "Installation is already patched. Skipping patching (use -Force to re-patch)."
+                $result.PatchSuccess = $true
+                return $result
+            }
+        }
+        catch {
+            Write-Warning "Invoke-CursorAgentUpdateWithPatch: Failed to check patch status. Error: $_"
+            # Continue with patching anyway
+        }
+        
+        # Step 7: Patch the new version
+        try {
+            Write-Verbose "Patching installation at: $versionDirectory"
+            $patchResult = Invoke-PatchExistingInstallation -InstallationPath $versionDirectory -Force:$Force
+            $result.PatchResult = $patchResult
+            $result.PatchSuccess = $true
+            Write-Verbose "Patching completed successfully"
+        }
+        catch {
+            Write-Error "Invoke-CursorAgentUpdateWithPatch: Patching failed. Error: $_"
+            $result.PatchSuccess = $false
+            $result.PatchResult = @{
+                Success = $false
+                Error = $_.ToString()
+            }
+            return $result
+        }
+        
+        return $result
+    }
+    catch {
+        Write-Error "Invoke-CursorAgentUpdateWithPatch: Failed to execute update with patch workflow. Error: $_"
+        $result.UpdateError = $_.ToString()
+        $result.UpdateSuccess = $false
+        return $result
+    }
+}
+
 #endregion
 
 # Export module members
 # Only export public API functions - all helper functions remain internal
-Export-ModuleMember -Function Get-PatcherConfig, Get-CursorAgentVersion, Invoke-CursorAgentPatch, New-CursorAgentLauncher, Get-WindowsArchitecture
+Export-ModuleMember -Function Get-PatcherConfig, Get-CursorAgentVersion, Invoke-CursorAgentPatch, New-CursorAgentLauncher, Get-WindowsArchitecture, Get-CursorAgentVersionDirectory, Invoke-CursorAgentUpdateWithPatch

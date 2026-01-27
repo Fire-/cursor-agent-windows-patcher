@@ -73,9 +73,9 @@ Helpers and main script - user-facing components.
 
 Automatic patching after cursor-agent self-updates.
 
-- ⬜ Spec 037: Intercept Update Command
-- ⬜ Spec 038: Detect Updated Version Directory
-- ⬜ Spec 039: Patch State Tracking
+- ✅ **Spec 037: Intercept Update Command** (2026-01-27)
+- ✅ **Spec 038: Detect Updated Version Directory** (2026-01-27)
+- ✅ **Spec 039: Patch State Tracking** (2026-01-27)
 
 ### Testing Infrastructure
 
