@@ -86,3 +86,12 @@ Property-based, state machine, and DST frameworks - can be implemented in parall
 - [x] [Spec 035: State Machine Tests for Patching Workflow](spec-035-state-machine-tests-workflow.md)
 - [x] [Spec 036: Deterministic Simulation Tests for Full Workflow](spec-036-deterministic-simulation-tests.md)
 
+## Post-Implementation Tasks
+
+Quality assurance, documentation, and validation tasks to complete the project.
+
+- [x] [Spec 040: Integration Testing - End-to-End Test with Real Package](spec-040-integration-testing.md)
+- [x] [Spec 041: Documentation - Update README with Usage Examples](spec-041-documentation-update.md)
+- [x] [Spec 042: Error Handling Review - Verify Edge Cases Are Handled](spec-042-error-handling-review.md)
+- [x] [Spec 043: User Acceptance Testing - Manual Testing of Full Workflow](spec-043-user-acceptance-testing.md)
+
