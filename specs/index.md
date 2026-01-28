@@ -79,10 +79,10 @@ Automatic patching after cursor-agent self-updates.
 
 Property-based, state machine, and DST frameworks - can be implemented in parallel with other components.
 
-- [Spec 031: Property-Based Testing Framework](spec-031-property-based-testing-framework.md)
-- [Spec 032: State Machine Testing Framework](spec-032-state-machine-testing-framework.md)
-- [Spec 033: Deterministic Simulation Testing Framework](spec-033-deterministic-simulation-framework.md)
-- [Spec 034: Property Tests for Version Extraction](spec-034-property-tests-version-extraction.md)
-- [Spec 035: State Machine Tests for Patching Workflow](spec-035-state-machine-tests-workflow.md)
-- [Spec 036: Deterministic Simulation Tests for Full Workflow](spec-036-deterministic-simulation-tests.md)
+- [x] [Spec 031: Property-Based Testing Framework](spec-031-property-based-testing-framework.md)
+- [x] [Spec 032: State Machine Testing Framework](spec-032-state-machine-testing-framework.md)
+- [x] [Spec 033: Deterministic Simulation Testing Framework](spec-033-deterministic-simulation-framework.md)
+- [x] [Spec 034: Property Tests for Version Extraction](spec-034-property-tests-version-extraction.md)
+- [x] [Spec 035: State Machine Tests for Patching Workflow](spec-035-state-machine-tests-workflow.md)
+- [x] [Spec 036: Deterministic Simulation Tests for Full Workflow](spec-036-deterministic-simulation-tests.md)
 
