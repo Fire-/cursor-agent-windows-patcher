@@ -339,7 +339,7 @@ Quality assurance, documentation, and validation tasks to complete the project.
   - Tested and verified working (function loads correctly, signature matches spec)
 - ✅ Completed Spec 026: Enhanced `New-CursorAgentLauncher` function in `CursorAgentPatcher.psm1`
   - Fully implements launcher script generation with update interception support
-  - Standard mode: Creates batch script that invokes Bun (or Node.js fallback) with index.js
+  - Standard mode: Creates batch script that invokes Node.js with index.js
   - Update interception mode: Creates PowerShell wrapper script that intercepts update/upgrade commands
   - Wrapper script handles patcher module import, update command detection, passthrough to real cursor-agent or PATH lookup, and fallback to direct execution
   - Update interception requires Spec 037 (Invoke-CursorAgentUpdateWithPatch) for full functionality

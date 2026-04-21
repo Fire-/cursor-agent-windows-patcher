@@ -229,6 +229,9 @@ function Get-CursorAgentInstallScript {
     Invoke-WebRequest and returns the raw script content as a string. Handles network
     errors, HTTP error status codes, and timeouts with descriptive error messages.
     
+    .PARAMETER InstallUrl
+    Install script URL to fetch. Defaults to https://cursor.com/install.
+    
     .OUTPUTS
     string. Returns the raw script content from the install URL.
     
@@ -246,9 +249,16 @@ function Get-CursorAgentInstallScript {
     }
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$InstallUrl = "https://cursor.com/install"
+    )
     
-    $installUrl = "https://cursor.com/install"
+    if ([string]::IsNullOrWhiteSpace($InstallUrl)) {
+        throw "Get-CursorAgentInstallScript: InstallUrl parameter is null or empty"
+    }
+    
+    $installUrl = $InstallUrl
     
     try {
         Write-Verbose "Fetching Cursor Agent install script from '$installUrl'"
@@ -818,8 +828,8 @@ function Get-RipGrepVersion {
         $rgPaths = @(
             Join-Path -Path $PackagePath -ChildPath "rg"
             Join-Path -Path $PackagePath -ChildPath "rg.exe"
-            Join-Path -Path $PackagePath -ChildPath "bin" -AdditionalChildPath "rg"
-            Join-Path -Path $PackagePath -ChildPath "bin" -AdditionalChildPath "rg.exe"
+            (Join-Path -Path (Join-Path -Path $PackagePath -ChildPath "bin") -ChildPath "rg")
+            (Join-Path -Path (Join-Path -Path $PackagePath -ChildPath "bin") -ChildPath "rg.exe")
         )
         
         # Also search recursively for rg binary
@@ -829,15 +839,28 @@ function Get-RipGrepVersion {
         foreach ($rgPath in $rgPaths) {
             if (Test-Path -Path $rgPath -PathType Leaf) {
                 Write-Verbose "Found rg binary at: $rgPath"
+                $extension = [System.IO.Path]::GetExtension($rgPath)
+                if ($extension -and @(".exe", ".cmd", ".bat") -notcontains $extension.ToLowerInvariant()) {
+                    Write-Verbose "Skipping non-Windows executable candidate: $rgPath"
+                    continue
+                }
+                if (-not $extension) {
+                    Write-Verbose "Skipping extensionless rg candidate on Windows: $rgPath"
+                    continue
+                }
                 
                 # Try to execute rg --version
                 try {
                     $versionOutput = & $rgPath --version 2>&1
+                    if ($null -eq $versionOutput) {
+                        Write-Verbose "rg --version returned no output for: $rgPath"
+                        continue
+                    }
                     
                     # Parse version from output: ripgrep (\d+\.\d+\.\d+)
                     # Example output: "ripgrep 14.1.0\n..."
                     $versionPattern = 'ripgrep\s+(\d+\.\d+\.\d+)'
-                    $match = [regex]::Match($versionOutput, $versionPattern)
+                    $match = [regex]::Match($versionOutput.ToString(), $versionPattern)
                     
                     if ($match.Success) {
                         $version = $match.Groups[1].Value
@@ -861,10 +884,23 @@ function Get-RipGrepVersion {
             foreach ($rgBinary in $rgBinaries) {
                 try {
                     Write-Verbose "Trying rg binary at: $($rgBinary.FullName)"
+                    $extension = [System.IO.Path]::GetExtension($rgBinary.FullName)
+                    if ($extension -and @(".exe", ".cmd", ".bat") -notcontains $extension.ToLowerInvariant()) {
+                        Write-Verbose "Skipping non-Windows executable candidate: $($rgBinary.FullName)"
+                        continue
+                    }
+                    if (-not $extension) {
+                        Write-Verbose "Skipping extensionless rg candidate on Windows: $($rgBinary.FullName)"
+                        continue
+                    }
                     $versionOutput = & $rgBinary.FullName --version 2>&1
+                    if ($null -eq $versionOutput) {
+                        Write-Verbose "rg --version returned no output for: $($rgBinary.FullName)"
+                        continue
+                    }
                     
                     $versionPattern = 'ripgrep\s+(\d+\.\d+\.\d+)'
-                    $match = [regex]::Match($versionOutput, $versionPattern)
+                    $match = [regex]::Match($versionOutput.ToString(), $versionPattern)
                     
                     if ($match.Success) {
                         $version = $match.Groups[1].Value
@@ -1000,6 +1036,190 @@ function Get-RipGrepVersion {
     }
 }
 
+function Get-PtyVersion {
+    <#
+    .SYNOPSIS
+    Extract @lydell/node-pty version from extracted package directory.
+
+    .DESCRIPTION
+    Searches bundled JavaScript for @lydell/node-pty package signatures and
+    extracts the version used by the packaged CLI runtime.
+
+    .PARAMETER PackagePath
+    Path to the extracted package directory to search.
+
+    .OUTPUTS
+    string or $null
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackagePath
+    )
+
+    try {
+        if ([string]::IsNullOrWhiteSpace($PackagePath)) {
+            throw "Get-PtyVersion: Package path is null or empty"
+        }
+
+        $PackagePath = [System.Environment]::ExpandEnvironmentVariables($PackagePath)
+        if (-not [System.IO.Path]::IsPathRooted($PackagePath)) {
+            $PackagePath = [System.IO.Path]::GetFullPath($PackagePath)
+        }
+
+        if (-not (Test-Path -Path $PackagePath -PathType Container)) {
+            throw "Get-PtyVersion: Package path does not exist or is not a directory: '$PackagePath'"
+        }
+
+        $patterns = @(
+            '@lydell\+node-pty-darwin-(?:arm64|x64)@([^/]+)',
+            '@lydell/node-pty-darwin-(?:arm64|x64)@([^/]+)',
+            '@lydell\+node-pty@([^/_\s]+)'
+        )
+
+        $indexJsPath = Join-Path -Path $PackagePath -ChildPath "index.js"
+        if (Test-Path -Path $indexJsPath -PathType Leaf) {
+            try {
+                $content = Get-Content -Path $indexJsPath -Raw -ErrorAction Stop
+                foreach ($pattern in $patterns) {
+                    $match = [regex]::Match($content, $pattern)
+                    if ($match.Success) {
+                        $version = $match.Groups[1].Value
+                        if (-not [string]::IsNullOrWhiteSpace($version)) {
+                            Write-Verbose "Found Pty version in index.js using pattern '$pattern': $version"
+                            return $version
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Error reading index.js for Pty version detection: $_"
+            }
+        }
+
+        $jsFiles = Get-ChildItem -Path $PackagePath -Filter "*.js" -Recurse -ErrorAction SilentlyContinue
+        foreach ($file in $jsFiles) {
+            try {
+                $content = Get-Content -Path $file.FullName -Raw -ErrorAction Stop
+                foreach ($pattern in $patterns) {
+                    $match = [regex]::Match($content, $pattern)
+                    if ($match.Success) {
+                        $version = $match.Groups[1].Value
+                        if (-not [string]::IsNullOrWhiteSpace($version)) {
+                            Write-Verbose "Found Pty version in $($file.Name) using pattern '$pattern': $version"
+                            return $version
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Error reading file $($file.FullName) for Pty version detection: $_"
+            }
+        }
+
+        Write-Verbose "Pty version not found in package directory"
+        return $null
+    }
+    catch [System.Management.Automation.ItemNotFoundException] {
+        Write-Error "Get-PtyVersion: Package path not found: '$PackagePath'"
+        throw
+    }
+    catch [System.ArgumentException] {
+        Write-Error "Get-PtyVersion: Invalid package path format: '$PackagePath'. Error: $_"
+        throw
+    }
+    catch {
+        Write-Error "Get-PtyVersion: Failed to extract Pty version from package. Error: $_"
+        throw
+    }
+}
+
+function Get-NodeRuntimeVersion {
+    <#
+    .SYNOPSIS
+    Extract bundled Node.js runtime version from package node binary.
+
+    .DESCRIPTION
+    Scans the packaged `node` binary for an embedded `node.js/vX.Y.Z`
+    marker and returns the detected semantic version string.
+
+    .PARAMETER PackagePath
+    Path to extracted package directory.
+
+    .OUTPUTS
+    string or $null
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackagePath
+    )
+
+    try {
+        if ([string]::IsNullOrWhiteSpace($PackagePath)) {
+            throw "Get-NodeRuntimeVersion: Package path is null or empty"
+        }
+
+        $PackagePath = [System.Environment]::ExpandEnvironmentVariables($PackagePath)
+        if (-not [System.IO.Path]::IsPathRooted($PackagePath)) {
+            $PackagePath = [System.IO.Path]::GetFullPath($PackagePath)
+        }
+
+        if (-not (Test-Path -Path $PackagePath -PathType Container)) {
+            throw "Get-NodeRuntimeVersion: Package path does not exist or is not a directory: '$PackagePath'"
+        }
+
+        $nodeBinaryPath = Join-Path -Path $PackagePath -ChildPath "node"
+        if (-not (Test-Path -Path $nodeBinaryPath -PathType Leaf)) {
+            Write-Verbose "Get-NodeRuntimeVersion: bundled node binary not found at '$nodeBinaryPath'"
+            return $null
+        }
+
+        $stream = [System.IO.File]::OpenRead($nodeBinaryPath)
+        try {
+            $buffer = New-Object byte[] 1048576
+            $tail = ""
+            while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                $chunk = [System.Text.Encoding]::ASCII.GetString($buffer, 0, $read)
+                $text = $tail + $chunk
+                $match = [regex]::Match($text, 'node\.js/v(?<v>\d+\.\d+\.\d+)')
+                if ($match.Success) {
+                    $version = $match.Groups['v'].Value
+                    if (-not [string]::IsNullOrWhiteSpace($version)) {
+                        Write-Verbose "Detected bundled Node runtime version: $version"
+                        return $version
+                    }
+                }
+
+                if ($text.Length -gt 256) {
+                    $tail = $text.Substring($text.Length - 256)
+                }
+                else {
+                    $tail = $text
+                }
+            }
+        }
+        finally {
+            $stream.Dispose()
+        }
+
+        Write-Verbose "Get-NodeRuntimeVersion: version marker not found in bundled node binary"
+        return $null
+    }
+    catch [System.Management.Automation.ItemNotFoundException] {
+        Write-Error "Get-NodeRuntimeVersion: Package path not found: '$PackagePath'"
+        throw
+    }
+    catch [System.ArgumentException] {
+        Write-Error "Get-NodeRuntimeVersion: Invalid package path format: '$PackagePath'. Error: $_"
+        throw
+    }
+    catch {
+        Write-Error "Get-NodeRuntimeVersion: Failed to extract Node runtime version from package. Error: $_"
+        throw
+    }
+}
+
 #endregion
 
 #region Download Infrastructure Functions
@@ -1023,6 +1243,9 @@ function Get-FileWithProgress {
     .PARAMETER ShowProgress
     If specified, displays progress indication during download using Write-Progress.
     
+    .PARAMETER TimeoutSec
+    Maximum number of seconds to wait for the HTTP request before timing out.
+    
     .OUTPUTS
     void. This function does not return a value.
     
@@ -1043,7 +1266,11 @@ function Get-FileWithProgress {
         [string]$OutPath,
         
         [Parameter(Mandatory = $false)]
-        [switch]$ShowProgress
+        [switch]$ShowProgress,
+        
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 3600)]
+        [int]$TimeoutSec = 60
     )
     
     try {
@@ -1086,7 +1313,7 @@ function Get-FileWithProgress {
                 Write-Progress -Activity "Downloading File" -Status "Downloading from $Url..." -PercentComplete 50
             }
             
-            $response = Invoke-WebRequest -Uri $Url -OutFile $OutPath -UseBasicParsing -ErrorAction Stop
+            $response = Invoke-WebRequest -Uri $Url -OutFile $OutPath -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop
             
             if ($ShowProgress) {
                 Write-Progress -Activity "Downloading File" -Status "Download complete" -PercentComplete 100
@@ -1122,7 +1349,7 @@ function Get-FileWithProgress {
             if ($ShowProgress) {
                 Write-Progress -Activity "Downloading File" -Completed
             }
-            throw "Get-FileWithProgress: Request to '$Url' timed out"
+            throw "Get-FileWithProgress: Request to '$Url' timed out after $TimeoutSec second(s)"
         }
         catch {
             if ($ShowProgress) {
@@ -1199,6 +1426,12 @@ function Get-GitHubReleaseAsset {
     Release tag to download from. Use "latest" for the latest release, or a specific
     tag like "v1.2.3". Defaults to "latest".
     
+    .PARAMETER MetadataTimeoutSec
+    Maximum number of seconds to wait for GitHub release metadata requests.
+    
+    .PARAMETER DownloadTimeoutSec
+    Maximum number of seconds to wait for downloading the selected release asset.
+    
     .OUTPUTS
     void. This function does not return a value.
     
@@ -1212,17 +1445,25 @@ function Get-GitHubReleaseAsset {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$Repo,
         
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$AssetPattern,
         
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$OutPath,
         
-        [Parameter(Mandatory=$false)]
-        [string]$ReleaseTag = "latest"
+        [Parameter(Mandatory = $false)]
+        [string]$ReleaseTag = "latest",
+        
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 600)]
+        [int]$MetadataTimeoutSec = 15,
+        
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 3600)]
+        [int]$DownloadTimeoutSec = 60
     )
     
     try {
@@ -1274,7 +1515,7 @@ function Get-GitHubReleaseAsset {
         
         # Fetch release metadata using Invoke-RestMethod
         try {
-            $release = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing -ErrorAction Stop
+            $release = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing -TimeoutSec $MetadataTimeoutSec -ErrorAction Stop
         }
         catch [System.Net.WebException] {
             # Handle HTTP errors
@@ -1298,7 +1539,7 @@ function Get-GitHubReleaseAsset {
             }
         }
         catch [System.TimeoutException] {
-            throw "Get-GitHubReleaseAsset: Request to '$apiUrl' timed out"
+            throw "Get-GitHubReleaseAsset: Request to '$apiUrl' timed out after $MetadataTimeoutSec second(s)"
         }
         catch {
             throw "Get-GitHubReleaseAsset: Failed to fetch release metadata from '$apiUrl'. Error: $_"
@@ -1362,7 +1603,7 @@ function Get-GitHubReleaseAsset {
         Write-Verbose "Downloading asset '$($selectedAsset.name)' from URL: $($selectedAsset.browser_download_url)"
         
         try {
-            Get-FileWithProgress -Url $selectedAsset.browser_download_url -OutPath $OutPath -ShowProgress:$false
+            Get-FileWithProgress -Url $selectedAsset.browser_download_url -OutPath $OutPath -ShowProgress:$false -TimeoutSec $DownloadTimeoutSec
             Write-Verbose "Successfully downloaded asset '$($selectedAsset.name)' to '$OutPath'"
         }
         catch {
@@ -1414,10 +1655,10 @@ function Get-CachedBinary {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$CacheKey,
         
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$CacheDirectory
     )
     
@@ -1546,13 +1787,13 @@ function Save-BinaryToCache {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$SourcePath,
         
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$CacheKey,
         
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$CacheDirectory
     )
     
@@ -1682,6 +1923,9 @@ function Get-CursorAgentPackage {
     .PARAMETER OutPath
     Path where the downloaded package should be saved.
     
+    .PARAMETER TimeoutSec
+    Maximum number of seconds to wait for the package download request.
+    
     .OUTPUTS
     string. Returns the absolute path to the downloaded package file.
     
@@ -1695,17 +1939,21 @@ function Get-CursorAgentPackage {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$Version,
         
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory = $false)]
         [string]$SourceOs = "darwin",
         
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory = $false)]
         [string]$SourceArch = "arm64",
         
-        [Parameter(Mandatory=$true)]
-        [string]$OutPath
+        [Parameter(Mandatory = $true)]
+        [string]$OutPath,
+        
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 3600)]
+        [int]$TimeoutSec = 90
     )
     
     try {
@@ -1747,7 +1995,7 @@ function Get-CursorAgentPackage {
         
         # Download using Get-FileWithProgress
         try {
-            Get-FileWithProgress -Url $downloadUrl -OutPath $OutPath -ShowProgress:$false
+            Get-FileWithProgress -Url $downloadUrl -OutPath $OutPath -ShowProgress:$false -TimeoutSec $TimeoutSec
             Write-Verbose "Package downloaded successfully"
         }
         catch {
@@ -1798,9 +2046,8 @@ function Expand-CursorAgentPackage {
     
     .DESCRIPTION
     Extracts a .tar.gz archive containing the Cursor Agent package to the specified
-    output directory. Attempts to use 7-Zip if available, otherwise falls back to
-    PowerShell's Expand-Archive (which may not support .tar.gz in PowerShell 5.1).
-    If no extraction tool is available, throws an error with installation instructions.
+    output directory. Uses 7-Zip when available, otherwise Windows tar.exe (Windows 10+),
+    which can extract .tar.gz in one step. If neither is available, throws with setup guidance.
     
     .PARAMETER ArchivePath
     Path to the .tar.gz archive file to extract.
@@ -1821,10 +2068,10 @@ function Expand-CursorAgentPackage {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$ArchivePath,
         
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$OutDirectory
     )
     
@@ -1871,7 +2118,7 @@ function Expand-CursorAgentPackage {
             Write-Verbose "Found 7-Zip at: $sevenZipPath"
         }
         catch {
-            Write-Verbose "7-Zip not found in PATH, will try PowerShell Expand-Archive"
+            Write-Verbose "7-Zip not found in PATH, will try Windows tar.exe"
         }
         
         # Try 7-Zip first if available
@@ -1944,21 +2191,51 @@ function Expand-CursorAgentPackage {
             }
         }
         else {
-            # Try PowerShell Expand-Archive (may not work for .tar.gz in PowerShell 5.1)
-            Write-Verbose "Attempting to extract using PowerShell Expand-Archive..."
-            
-            try {
-                # PowerShell 5.1's Expand-Archive may not support .tar.gz
-                # We'll try it, but expect it might fail
-                Expand-Archive -Path $ArchivePath -DestinationPath $OutDirectory -Force -ErrorAction Stop
-                Write-Verbose "Archive extracted successfully using PowerShell Expand-Archive"
+            $tarCommand = Get-Command -Name 'tar' -ErrorAction SilentlyContinue
+            if ($null -ne $tarCommand) {
+                try {
+                    $tarExe = $tarCommand.Source
+                    if ([string]::IsNullOrWhiteSpace($tarExe)) {
+                        $tarExe = 'tar'
+                    }
+                    Write-Verbose "Extracting using tar: $tarExe"
+                    $tarStdOut = Join-Path -Path $env:TEMP -ChildPath "cursor-agent-tar-stdout-$(New-Guid).log"
+                    $tarStdErr = Join-Path -Path $env:TEMP -ChildPath "cursor-agent-tar-stderr-$(New-Guid).log"
+                    $tarProcess = Start-Process -FilePath $tarExe -ArgumentList @(
+                        '-xzf',
+                        $ArchivePath,
+                        '-C',
+                        $OutDirectory
+                    ) -Wait -NoNewWindow -PassThru -RedirectStandardOutput $tarStdOut -RedirectStandardError $tarStdErr -ErrorAction Stop
+                    if ($tarProcess.ExitCode -ne 0) {
+                        $tarError = $null
+                        if (Test-Path -Path $tarStdErr -PathType Leaf) {
+                            $tarError = (Get-Content -Path $tarStdErr -Raw -ErrorAction SilentlyContinue).Trim()
+                        }
+                        if ([string]::IsNullOrWhiteSpace($tarError) -and (Test-Path -Path $tarStdOut -PathType Leaf)) {
+                            $tarError = (Get-Content -Path $tarStdOut -Raw -ErrorAction SilentlyContinue).Trim()
+                        }
+                        if (-not [string]::IsNullOrWhiteSpace($tarError)) {
+                            throw "tar extraction failed with exit code $($tarProcess.ExitCode). tar output: $tarError"
+                        }
+                        throw "tar extraction failed with exit code $($tarProcess.ExitCode)"
+                    }
+                    Write-Verbose "Archive extracted successfully using tar"
+                }
+                catch {
+                    throw "Expand-CursorAgentPackage: Failed to extract archive using tar. Error: $_"
+                }
+                finally {
+                    if (Test-Path -Path $tarStdOut -PathType Leaf) {
+                        Remove-Item -Path $tarStdOut -Force -ErrorAction SilentlyContinue
+                    }
+                    if (Test-Path -Path $tarStdErr -PathType Leaf) {
+                        Remove-Item -Path $tarStdErr -Force -ErrorAction SilentlyContinue
+                    }
+                }
             }
-            catch {
-                # PowerShell Expand-Archive doesn't support .tar.gz in PowerShell 5.1
-                $errorMessage = "Expand-CursorAgentPackage: No extraction tool available. PowerShell Expand-Archive does not support .tar.gz files in PowerShell 5.1. " +
-                                "Please install 7-Zip (https://www.7-zip.org/) and ensure '7z.exe' is in your PATH, then try again. " +
-                                "Error from Expand-Archive: $_"
-                throw $errorMessage
+            else {
+                throw "Expand-CursorAgentPackage: No extraction tool available. Install 7-Zip (https://www.7-zip.org/) and add 7z.exe to PATH, or use Windows 10/11 with built-in tar.exe."
             }
         }
         
@@ -1984,6 +2261,137 @@ function Expand-CursorAgentPackage {
     catch {
         Write-Error "Expand-CursorAgentPackage: Failed to extract archive. Error: $_"
         throw
+    }
+}
+
+function Expand-Sqlite3GithubArchiveToNodeFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ArchivePath,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationNodePath
+    )
+    
+    $extractDir = Join-Path -Path $env:TEMP -ChildPath "sqlite3-prebuilt-extract-$(New-Guid)"
+    New-Item -Path $extractDir -ItemType Directory -Force -ErrorAction Stop | Out-Null
+    
+    try {
+        $tarCommand = Get-Command -Name 'tar' -ErrorAction Stop
+        $tarExe = $tarCommand.Source
+        if ([string]::IsNullOrWhiteSpace($tarExe)) {
+            $tarExe = 'tar'
+        }
+        $tarProcess = Start-Process -FilePath $tarExe -ArgumentList @(
+            '-xzf',
+            $ArchivePath,
+            '-C',
+            $extractDir
+        ) -Wait -NoNewWindow -PassThru -ErrorAction Stop
+        if ($tarProcess.ExitCode -ne 0) {
+            throw "Expand-Sqlite3GithubArchiveToNodeFile: tar extraction failed with exit code $($tarProcess.ExitCode)"
+        }
+        
+        $nodeCandidates = @(Get-ChildItem -Path $extractDir -Filter '*.node' -Recurse -File -ErrorAction SilentlyContinue)
+        if ($nodeCandidates.Count -eq 0) {
+            throw "Expand-Sqlite3GithubArchiveToNodeFile: No .node file found inside archive '$ArchivePath'"
+        }
+        
+        $preferred = $nodeCandidates | Where-Object { $_.FullName -match '(?i)[\\/]Release[\\/]|node_sqlite3' } | Select-Object -First 1
+        $chosen = if ($null -ne $preferred) { $preferred } else { $nodeCandidates[0] }
+        
+        Copy-Item -LiteralPath $chosen.FullName -Destination $DestinationNodePath -Force -ErrorAction Stop
+    }
+    finally {
+        if (Test-Path -Path $extractDir -PathType Container) {
+            Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Expand-NpmTgzToNodeFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ArchivePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationNodePath,
+
+        [Parameter(Mandatory = $false)]
+        [string]$NodeFileName = "pty.node"
+    )
+
+    $extractDir = Join-Path -Path $env:TEMP -ChildPath "npm-prebuilt-extract-$(New-Guid)"
+    New-Item -Path $extractDir -ItemType Directory -Force -ErrorAction Stop | Out-Null
+
+    try {
+        $tarCommand = Get-Command -Name 'tar' -ErrorAction Stop
+        $tarExe = $tarCommand.Source
+        if ([string]::IsNullOrWhiteSpace($tarExe)) {
+            $tarExe = 'tar'
+        }
+
+        $tarProcess = Start-Process -FilePath $tarExe -ArgumentList @(
+            '-xzf',
+            $ArchivePath,
+            '-C',
+            $extractDir
+        ) -Wait -NoNewWindow -PassThru -ErrorAction Stop
+        if ($tarProcess.ExitCode -ne 0) {
+            throw "Expand-NpmTgzToNodeFile: tar extraction failed with exit code $($tarProcess.ExitCode)"
+        }
+
+        $nodeCandidates = @(Get-ChildItem -Path $extractDir -Filter $NodeFileName -Recurse -File -ErrorAction SilentlyContinue)
+        if ($nodeCandidates.Count -eq 0 -and $NodeFileName -ieq "pty.node") {
+            # @lydell/node-pty-win32 packages ship conpty.node on Windows.
+            $nodeCandidates = @(Get-ChildItem -Path $extractDir -Filter "conpty.node" -Recurse -File -ErrorAction SilentlyContinue)
+        }
+        if ($nodeCandidates.Count -eq 0) {
+            throw "Expand-NpmTgzToNodeFile: Node file '$NodeFileName' not found inside archive '$ArchivePath'"
+        }
+
+        $preferred = $nodeCandidates | Where-Object { $_.FullName -match '(?i)[\\/]build[\\/]Release[\\/]|[\\/]package[\\/]' } | Select-Object -First 1
+        $chosen = if ($null -ne $preferred) { $preferred } else { $nodeCandidates[0] }
+
+        Copy-Item -LiteralPath $chosen.FullName -Destination $DestinationNodePath -Force -ErrorAction Stop
+    }
+    finally {
+        if (Test-Path -Path $extractDir -PathType Container) {
+            Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Expand-NodeZipToExe {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ArchivePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationExePath
+    )
+
+    $extractDir = Join-Path -Path $env:TEMP -ChildPath "node-prebuilt-extract-$(New-Guid)"
+    New-Item -Path $extractDir -ItemType Directory -Force -ErrorAction Stop | Out-Null
+
+    try {
+        Expand-Archive -Path $ArchivePath -DestinationPath $extractDir -Force -ErrorAction Stop
+        $nodeCandidates = @(Get-ChildItem -Path $extractDir -Filter "node.exe" -Recurse -File -ErrorAction SilentlyContinue)
+        if ($nodeCandidates.Count -eq 0) {
+            throw "Expand-NodeZipToExe: node.exe not found inside archive '$ArchivePath'"
+        }
+
+        $preferred = $nodeCandidates | Where-Object { $_.FullName -match '(?i)[\\/]node-v[^\\/]+-win-(x64|arm64)[\\/]node\.exe$' } | Select-Object -First 1
+        $chosen = if ($null -ne $preferred) { $preferred } else { $nodeCandidates[0] }
+        Copy-Item -LiteralPath $chosen.FullName -Destination $DestinationExePath -Force -ErrorAction Stop
+    }
+    finally {
+        if (Test-Path -Path $extractDir -PathType Container) {
+            Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -2150,10 +2558,10 @@ function Find-FilesMatchingPattern {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$RootPath,
         
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$Pattern
     )
     
@@ -2318,7 +2726,7 @@ function Resolve-PatchDependencies {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [hashtable]$PatchRegistry
     )
     
@@ -2530,17 +2938,14 @@ function Invoke-Patch {
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [hashtable]$PatchDefinition,
         
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$PackagePath,
         
-        [Parameter(Mandatory=$true)]
-        [hashtable]$Context,
-        
-        [Parameter(Mandatory=$false)]
-        [switch]$WhatIf
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Context
     )
     
     try {
@@ -2579,6 +2984,11 @@ function Invoke-Patch {
             throw "Invoke-Patch: PatchDefinition.Verify must be a scriptblock"
         }
         
+        # Optional target filter for candidate files
+        if ($PatchDefinition.ContainsKey('TargetFilter') -and $PatchDefinition.TargetFilter -isnot [scriptblock]) {
+            throw "Invoke-Patch: PatchDefinition.TargetFilter must be a scriptblock when provided"
+        }
+        
         # Expand environment variables in package path
         $PackagePath = [System.Environment]::ExpandEnvironmentVariables($PackagePath)
         
@@ -2607,25 +3017,52 @@ function Invoke-Patch {
         
         # Initialize result
         $result = @{
-            Success = $true
+            Success      = $true
             FilesPatched = 0
-            Errors = @()
+            Errors       = @()
         }
         
-        # If no files found, return success with 0 files patched (not an error per spec)
-        if ($matchingFiles.Count -eq 0) {
+        # Build final target file list (optionally filtered)
+        $targetFiles = @()
+        if ($PatchDefinition.ContainsKey('TargetFilter')) {
+            foreach ($candidateFile in $matchingFiles) {
+                try {
+                    if (& $PatchDefinition.TargetFilter $candidateFile $Context) {
+                        $targetFiles += $candidateFile
+                    }
+                }
+                catch {
+                    $errorMsg = "Invoke-Patch: TargetFilter failed for file '$candidateFile'. Error: $_"
+                    Write-Error $errorMsg
+                    $result.Errors += $errorMsg
+                    $result.Success = $false
+                }
+            }
+        }
+        else {
+            $targetFiles = $matchingFiles
+        }
+        
+        # If no target files found, optionally fail for required patches
+        if ($targetFiles.Count -eq 0) {
             Write-Verbose "No files found matching pattern '$filePattern'"
+            if ($PatchDefinition.ContainsKey('RequireMatch') -and $PatchDefinition.RequireMatch) {
+                $errorMsg = "Invoke-Patch: Required patch '$description' found no target files (pattern '$filePattern')"
+                Write-Error $errorMsg
+                $result.Errors += $errorMsg
+                $result.Success = $false
+            }
             return $result
         }
         
-        Write-Verbose "Found $($matchingFiles.Count) file(s) matching pattern '$filePattern'"
+        Write-Verbose "Found $($targetFiles.Count) target file(s) for patch '$description'"
         
         # Process each matching file
-        foreach ($filePath in $matchingFiles) {
+        foreach ($filePath in $targetFiles) {
             try {
                 Write-Verbose "Processing file: $filePath"
                 
-                if ($WhatIf) {
+                if ($WhatIfPreference) {
                     # WhatIf mode: log what would be done
                     if ($PSCmdlet.ShouldProcess($filePath, "Apply patch '$description'")) {
                         Write-Host "What if: Applying patch '$description' to file: $filePath"
@@ -2691,7 +3128,7 @@ function Invoke-Patch {
         }
         
         # Log summary
-        if ($WhatIf) {
+        if ($WhatIfPreference) {
             Write-Verbose "WhatIf: Would patch $($result.FilesPatched) file(s)"
         }
         else {
@@ -2742,11 +3179,40 @@ function Register-PlatformDetectionPatch {
     
     try {
         $script:PatchRegistry['platform-detection'] = @{
-            Description = "Modify native.js to support Windows platform by adding win32 branch"
-            FilePattern = "**/native.js"
-            Priority = 1
+            Description  = "Patch merkle native loader resolution for Windows runtime"
+            FilePattern  = "**/*.js"
+            Priority     = 1
             Dependencies = @()
-            Apply = {
+            TargetFilter = {
+                param(
+                    [string]$FilePath,
+                    [hashtable]$Context
+                )
+                $fileName = [System.IO.Path]::GetFileName($FilePath)
+                if ($fileName -ieq "native.js") {
+                    return $true
+                }
+                try {
+                    $content = Get-Content -Path $FilePath -Raw -ErrorAction Stop
+                    return (
+                        (
+                            $content -match '\./merkle-tree-napi\.win32-(x64|arm64)-msvc\.node' -and
+                            $content -match 'Failed to load native binding'
+                        ) -or
+                        (
+                            $content -match '@anysphere/file-service-win32' -and
+                            $content -match 'Failed to load native binding'
+                        ) -or
+                        (
+                            $content -match 'createRequire\)\("file:///Users/runner/work/everysphere/everysphere/packages/exec-daemon/dist/pty-manager\.js"\)'
+                        )
+                    )
+                }
+                catch {
+                    return $false
+                }
+            }
+            Apply        = {
                 param(
                     [string]$FilePath,
                     [hashtable]$Context
@@ -2756,14 +3222,59 @@ function Register-PlatformDetectionPatch {
                 
                 # Read file content
                 $content = Get-Content -Path $FilePath -Raw -ErrorAction Stop
+
+                # Some older bundles inline a build-machine file URL into
+                # createRequire(), which crashes on Node for Windows.
+                $createRequireFixed = $content -replace 'createRequire\)\("file:///Users/runner/work/everysphere/everysphere/packages/exec-daemon/dist/pty-manager\.js"\)', 'createRequire)(__filename)'
+                if ($createRequireFixed -ne $content) {
+                    $content = $createRequireFixed
+                    Write-Verbose "Applied createRequire file URL fix in: $FilePath"
+                }
+
+                # File-service fallback: avoid hard crash when win32 prebuilt package
+                # is not bundled. Keep CLI booting for non file-service paths.
+                if ($content -match '@anysphere/file-service-win32') {
+                    $fileServiceFallback = $content -replace 'if\(!c\)\{if\(u\)throw u;throw new Error\("Failed to load native binding"\)\}', 'if(!c){console.warn("Warning: file-service native binding unavailable; continuing without file-service features");c={}}'
+                    if ($fileServiceFallback -ne $content) {
+                        Set-Content -Path $FilePath -Value $fileServiceFallback -NoNewline -ErrorAction Stop
+                        Write-Verbose "Platform detection patch applied (file-service native fallback) to: $FilePath"
+                        return
+                    }
+                }
+
+                # Newest bundled formats: replace webpack missing-module stubs
+                # with direct require() of patched win32 native files.
+                $updatedContent = $content `
+                    -replace '__webpack_require__\(\s*Object\(function\s+webpackMissingModule\(\)\s*\{\s*var e = new Error\("Cannot find module ''\./merkle-tree-napi\.win32-x64-msvc\.node''"\);\s*e\.code\s*=\s*[''"]MODULE_NOT_FOUND[''"];\s*throw e;\s*\}\(\)\)\s*\)', 'require("./merkle-tree-napi.win32-x64-msvc.node")' `
+                    -replace '__webpack_require__\(\s*Object\(function\s+webpackMissingModule\(\)\s*\{\s*var e = new Error\("Cannot find module ''\./merkle-tree-napi\.win32-arm64-msvc\.node''"\);\s*e\.code\s*=\s*[''"]MODULE_NOT_FOUND[''"];\s*throw e;\s*\}\(\)\)\s*\)', 'require("./merkle-tree-napi.win32-arm64-msvc.node")' `
+                    -replace 'n\(Object\(function\(\)\{var e=new Error\("Cannot find module ''\./merkle-tree-napi\.win32-x64-msvc\.node''"\);throw e\.code="MODULE_NOT_FOUND",e\}\(\)\)\)', 'require("./merkle-tree-napi.win32-x64-msvc.node")' `
+                    -replace 'n\(Object\(function\(\)\{var e=new Error\("Cannot find module ''\./merkle-tree-napi\.win32-arm64-msvc\.node''"\);throw e\.code="MODULE_NOT_FOUND",e\}\(\)\)\)', 'require("./merkle-tree-napi.win32-arm64-msvc.node")'
+                if ($updatedContent -ne $content) {
+                    Set-Content -Path $FilePath -Value $updatedContent -NoNewline -ErrorAction Stop
+                    Write-Verbose "Platform detection patch applied (replace win32 MODULE_NOT_FOUND stubs) to: $FilePath"
+                    return
+                }
                 
-                # Detect available loaders by searching for require_merkle_tree_napi_* patterns
+                # Newer bundled builds may include a win32 branch that throws
+                # "Cannot find module ..." placeholders. Replace those stubs with
+                # direct Node require() calls to our patched win32 native binaries.
+                $win32BranchPattern = 'else\{if\("win32"!==l\)throw new Error\(`Unsupported platform: \$\{l\}`\);if\("x64"===p\)d=n\(Object\(function\(\)\{var e=new Error\("Cannot find module ''\./merkle-tree-napi\.[^'']+\.node''"\);throw e\.code="MODULE_NOT_FOUND",e\}\(\)\)\);else\{if\("arm64"!==p\)throw new Error\(`Unsupported Windows architecture: \$\{p\}`\);d=n\(Object\(function\(\)\{var e=new Error\("Cannot find module ''\./merkle-tree-napi\.[^'']+\.node''"\);throw e\.code="MODULE_NOT_FOUND",e\}\(\)\)\)\}\}'
+                $win32BranchReplacement = 'else{if("win32"!==l)throw new Error(`Unsupported platform: ${l}`);if("x64"===p)d=require("./merkle-tree-napi.win32-x64-msvc.node");else{if("arm64"!==p)throw new Error(`Unsupported Windows architecture: ${p}`);d=require("./merkle-tree-napi.win32-arm64-msvc.node")}}'
+                $updatedContent = [regex]::Replace($content, $win32BranchPattern, $win32BranchReplacement)
+                if ($updatedContent -ne $content) {
+                    Set-Content -Path $FilePath -Value $updatedContent -NoNewline -ErrorAction Stop
+                    Write-Verbose "Platform detection patch applied (win32 branch direct native require) to: $FilePath"
+                    return
+                }
+
+                # Legacy fallback: Detect available loaders by searching for require_merkle_tree_napi_* patterns
                 # Pattern: require_merkle_tree_napi_([a-zA-Z0-9_]+)
                 $loaderPattern = 'require_merkle_tree_napi_([a-zA-Z0-9_]+)'
                 $loaderMatches = [regex]::Matches($content, $loaderPattern)
                 
                 if ($loaderMatches.Count -eq 0) {
-                    throw "Register-PlatformDetectionPatch: No merkle tree loaders found in file '$FilePath'"
+                    Write-Verbose "No legacy merkle loader signatures found in file '$FilePath'; skipping legacy platform patch logic"
+                    return
                 }
                 
                 # Extract available loader names
@@ -2827,7 +3338,7 @@ function Register-PlatformDetectionPatch {
                 
                 Write-Verbose "Platform detection patch applied successfully to: $FilePath"
             }
-            Verify = {
+            Verify       = {
                 param(
                     [string]$FilePath,
                     [hashtable]$Context
@@ -2838,18 +3349,24 @@ function Register-PlatformDetectionPatch {
                 # Read file content
                 $content = Get-Content -Path $FilePath -Raw -ErrorAction Stop
                 
-                # Check file contains platform3 === "win32"
-                if ($content -notmatch 'platform3\s*===\s*"win32"') {
-                    Write-Verbose "Verification failed: File does not contain 'platform3 === \"win32\"'"
+                # Newer bundled-loader verification: win32 branch must not still be
+                # wired to placeholder MODULE_NOT_FOUND stubs for merkle native files.
+                if (
+                    $content -match 'Failed to load native binding' -and
+                    $content -match "Cannot find module '\./merkle-tree-napi\.win32-(x64|arm64)-msvc\.node'"
+                ) {
+                    Write-Verbose "Verification failed: win32 merkle loader branch still points at MODULE_NOT_FOUND placeholders"
                     return $false
                 }
-                
-                # Check file contains require_merkle_tree_napi_ (any variant)
-                if ($content -notmatch 'require_merkle_tree_napi_') {
-                    Write-Verbose "Verification failed: File does not contain 'require_merkle_tree_napi_'"
-                    return $false
+
+                # Legacy fallback verification when file still contains old loader signatures
+                if ($content -match 'require_merkle_tree_napi_') {
+                    if ($content -notmatch 'platform3\s*===\s*"win32"') {
+                        Write-Verbose "Verification failed: Legacy loader content missing 'platform3 === \"win32\"'"
+                        return $false
+                    }
                 }
-                
+
                 Write-Verbose "Verification passed for: $FilePath"
                 return $true
             }
@@ -2882,11 +3399,26 @@ function Register-MerkleTreeModulePatch {
     
     try {
         $script:PatchRegistry['merkle-tree-module'] = @{
-            Description = "Replace merkle-tree native module file with Windows version"
-            FilePattern = "**/qfpzq242.node"
-            Priority = 2
+            Description  = "Replace merkle-tree native module file with Windows version"
+            FilePattern  = "**/*.node"
+            Priority     = 2
             Dependencies = @('platform-detection')
-            Apply = {
+            RequireMatch = $true
+            TargetFilter = {
+                param(
+                    [string]$FilePath,
+                    [hashtable]$Context
+                )
+                $name = [System.IO.Path]::GetFileName($FilePath)
+                return (
+                    $name -ieq "qfpzq242.node" -or
+                    $name -ieq "merkle-tree-napi.darwin-arm64.node" -or
+                    $name -ieq "merkle-tree-napi.darwin-x64.node" -or
+                    $name -ieq "merkle-tree-napi.win32-x64-msvc.node" -or
+                    $name -ieq "merkle-tree-napi.win32-arm64-msvc.node"
+                )
+            }
+            Apply        = {
                 param(
                     [string]$FilePath,
                     [hashtable]$Context
@@ -2920,62 +3452,66 @@ function Register-MerkleTreeModulePatch {
                     throw "Register-MerkleTreeModulePatch: Windows binary not found at '$windowsBinaryPath'"
                 }
                 
-                Write-Verbose "Copying Windows binary from '$windowsBinaryPath' to '$FilePath'"
+                $fileName = [System.IO.Path]::GetFileName($FilePath)
+                $fileDirectory = [System.IO.Path]::GetDirectoryName($FilePath)
+                $targetFilePath = $FilePath
+
+                Write-Verbose "Copying Windows binary from '$windowsBinaryPath' to '$targetFilePath'"
                 
-                # Get file info for permission preservation
-                $sourceFileInfo = Get-Item -Path $windowsBinaryPath -ErrorAction Stop
-                $destFileInfo = $null
-                
-                # Check if destination file exists (to preserve permissions if possible)
-                if (Test-Path -Path $FilePath -PathType Leaf) {
-                    $destFileInfo = Get-Item -Path $FilePath -ErrorAction Stop
-                    Write-Verbose "Destination file exists, will attempt to preserve permissions"
-                }
-                
-                # Copy Windows binary over existing .node file
                 try {
-                    Copy-Item -Path $windowsBinaryPath -Destination $FilePath -Force -ErrorAction Stop
-                    Write-Verbose "File copied successfully"
+                    Copy-Item -Path $windowsBinaryPath -Destination $targetFilePath -Force -ErrorAction Stop
+                    Write-Verbose "Merkle tree Windows binary copied successfully"
                 }
                 catch [System.UnauthorizedAccessException] {
-                    throw "Register-MerkleTreeModulePatch: Permission denied when copying to '$FilePath'. Error: $_"
+                    throw "Register-MerkleTreeModulePatch: Permission denied when copying to '$targetFilePath'. Error: $_"
                 }
                 catch [System.IO.IOException] {
-                    throw "Register-MerkleTreeModulePatch: I/O error when copying to '$FilePath'. Error: $_"
+                    throw "Register-MerkleTreeModulePatch: I/O error when copying to '$targetFilePath'. Error: $_"
                 }
                 catch {
-                    throw "Register-MerkleTreeModulePatch: Failed to copy file from '$windowsBinaryPath' to '$FilePath'. Error: $_"
+                    throw "Register-MerkleTreeModulePatch: Failed to copy file from '$windowsBinaryPath' to '$targetFilePath'. Error: $_"
                 }
                 
                 # Verify destination file exists and has content
-                if (-not (Test-Path -Path $FilePath -PathType Leaf)) {
-                    throw "Register-MerkleTreeModulePatch: File was not copied to destination '$FilePath'"
+                if (-not (Test-Path -Path $targetFilePath -PathType Leaf)) {
+                    throw "Register-MerkleTreeModulePatch: File was not copied to destination '$targetFilePath'"
                 }
                 
-                $copiedFileInfo = Get-Item -Path $FilePath -ErrorAction Stop
+                $copiedFileInfo = Get-Item -Path $targetFilePath -ErrorAction Stop
                 if ($copiedFileInfo.Length -eq 0) {
-                    throw "Register-MerkleTreeModulePatch: Copied file has zero size at '$FilePath'"
+                    throw "Register-MerkleTreeModulePatch: Copied file has zero size at '$targetFilePath'"
+                }
+
+                # Ensure explicit win32 filename is present as a compatibility alias.
+                if ($fileName -like "merkle-tree-napi.*.node") {
+                    $win32AliasPath = Join-Path -Path $fileDirectory -ChildPath "merkle-tree-napi.win32-$($Context.WindowsArchitecture)-msvc.node"
+                    if ($win32AliasPath -ne $targetFilePath) {
+                        Copy-Item -Path $windowsBinaryPath -Destination $win32AliasPath -Force -ErrorAction Stop
+                        Write-Verbose "Merkle-tree win32 alias copied to: $win32AliasPath"
+                    }
                 }
                 
-                Write-Verbose "Merkle-tree module replacement patch applied successfully. File size: $($copiedFileInfo.Length) bytes"
+                Write-Verbose "Merkle-tree module replacement patch applied successfully. Target file size: $($copiedFileInfo.Length) bytes"
             }
-            Verify = {
+            Verify       = {
                 param(
                     [string]$FilePath,
                     [hashtable]$Context
                 )
                 
                 Write-Verbose "Verifying merkle-tree module replacement patch for: $FilePath"
+                $verifyPath = $FilePath
+                $fileName = [System.IO.Path]::GetFileName($FilePath)
                 
                 # Check file exists
-                if (-not (Test-Path -Path $FilePath -PathType Leaf)) {
-                    Write-Verbose "Verification failed: File does not exist at '$FilePath'"
+                if (-not (Test-Path -Path $verifyPath -PathType Leaf)) {
+                    Write-Verbose "Verification failed: File does not exist at '$verifyPath'"
                     return $false
                 }
                 
                 # Check file size > 0
                 try {
-                    $fileInfo = Get-Item -Path $FilePath -ErrorAction Stop
+                    $fileInfo = Get-Item -Path $verifyPath -ErrorAction Stop
                     if ($fileInfo.Length -eq 0) {
                         Write-Verbose "Verification failed: File has zero size"
                         return $false
@@ -2993,7 +3529,7 @@ function Register-MerkleTreeModulePatch {
                 # For .node files, we can check if it's a valid PE/ELF/Mach-O binary
                 # This is optional per spec, so we'll do a basic check
                 try {
-                    $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
+                    $fileBytes = [System.IO.File]::ReadAllBytes($verifyPath)
                     
                     # Check minimum size (very small files are likely invalid)
                     if ($fileBytes.Length -lt 100) {
@@ -3045,6 +3581,15 @@ function Register-MerkleTreeModulePatch {
                     Write-Verbose "Verification warning: Could not read file bytes for magic byte check. Error: $_"
                     # Don't fail verification for this - it's optional
                 }
+
+                if ($fileName -like "merkle-tree-napi.*.node") {
+                    $fileDirectory = [System.IO.Path]::GetDirectoryName($FilePath)
+                    $win32AliasPath = Join-Path -Path $fileDirectory -ChildPath "merkle-tree-napi.win32-$($Context.WindowsArchitecture)-msvc.node"
+                    if (-not (Test-Path -Path $win32AliasPath -PathType Leaf)) {
+                        Write-Verbose "Verification failed: win32 merkle alias missing at '$win32AliasPath'"
+                        return $false
+                    }
+                }
                 
                 Write-Verbose "Verification passed for: $FilePath"
                 return $true
@@ -3078,11 +3623,23 @@ function Register-Sqlite3ModulePatch {
     
     try {
         $script:PatchRegistry['sqlite3-module'] = @{
-            Description = "Replace sqlite3 native module file with Windows version"
-            FilePattern = "**/kkkzjw1t.node"
-            Priority = 2
+            Description  = "Replace sqlite3 native module file with Windows version"
+            FilePattern  = "**/*.node"
+            Priority     = 2
             Dependencies = @()
-            Apply = {
+            RequireMatch = $true
+            TargetFilter = {
+                param(
+                    [string]$FilePath,
+                    [hashtable]$Context
+                )
+                $name = [System.IO.Path]::GetFileName($FilePath)
+                return (
+                    $name -ieq "kkkzjw1t.node" -or
+                    $name -ieq "node_sqlite3.node"
+                )
+            }
+            Apply        = {
                 param(
                     [string]$FilePath,
                     [hashtable]$Context
@@ -3155,7 +3712,7 @@ function Register-Sqlite3ModulePatch {
                 
                 Write-Verbose "SQLite3 module replacement patch applied successfully. File size: $($copiedFileInfo.Length) bytes"
             }
-            Verify = {
+            Verify       = {
                 param(
                     [string]$FilePath,
                     [hashtable]$Context
@@ -3255,6 +3812,191 @@ function Register-Sqlite3ModulePatch {
     }
 }
 
+function Register-PtyModulePatch {
+    <#
+    .SYNOPSIS
+    Register the pty native module replacement patch in the patch registry.
+
+    .DESCRIPTION
+    Replaces bundled darwin pty.node binaries with a Windows-compatible
+    node-pty binary when present in the package.
+    #>
+    [CmdletBinding()]
+    param()
+
+    try {
+        $script:PatchRegistry['pty-module'] = @{
+            Description  = "Replace pty.node native module with Windows version"
+            FilePattern  = "**/*.node"
+            Priority     = 2
+            Dependencies = @()
+            RequireMatch = $false
+            TargetFilter = {
+                param(
+                    [string]$FilePath,
+                    [hashtable]$Context
+                )
+                return ([System.IO.Path]::GetFileName($FilePath) -ieq "pty.node")
+            }
+            Apply        = {
+                param(
+                    [string]$FilePath,
+                    [hashtable]$Context
+                )
+
+                Write-Verbose "Applying pty module replacement patch to: $FilePath"
+
+                if (-not $Context.WindowsBinaries -or -not $Context.WindowsBinaries.ContainsKey('pty')) {
+                    throw "Register-PtyModulePatch: Context.WindowsBinaries['pty'] is missing"
+                }
+
+                $windowsBinaryPath = $Context.WindowsBinaries['pty']
+                if ([string]::IsNullOrWhiteSpace($windowsBinaryPath)) {
+                    throw "Register-PtyModulePatch: Context.WindowsBinaries['pty'] is null or empty"
+                }
+
+                $windowsBinaryPath = [System.Environment]::ExpandEnvironmentVariables($windowsBinaryPath)
+                if (-not [System.IO.Path]::IsPathRooted($windowsBinaryPath)) {
+                    $windowsBinaryPath = [System.IO.Path]::GetFullPath($windowsBinaryPath)
+                }
+
+                if (-not (Test-Path -Path $windowsBinaryPath -PathType Leaf)) {
+                    throw "Register-PtyModulePatch: Windows pty binary not found at '$windowsBinaryPath'"
+                }
+
+                Copy-Item -Path $windowsBinaryPath -Destination $FilePath -Force -ErrorAction Stop
+
+                if (-not (Test-Path -Path $FilePath -PathType Leaf)) {
+                    throw "Register-PtyModulePatch: File was not copied to destination '$FilePath'"
+                }
+
+                $copiedFileInfo = Get-Item -Path $FilePath -ErrorAction Stop
+                if ($copiedFileInfo.Length -eq 0) {
+                    throw "Register-PtyModulePatch: Copied file has zero size at '$FilePath'"
+                }
+            }
+            Verify       = {
+                param(
+                    [string]$FilePath,
+                    [hashtable]$Context
+                )
+
+                if (-not (Test-Path -Path $FilePath -PathType Leaf)) {
+                    Write-Verbose "Verification failed: File does not exist at '$FilePath'"
+                    return $false
+                }
+
+                try {
+                    $fileInfo = Get-Item -Path $FilePath -ErrorAction Stop
+                    if ($fileInfo.Length -eq 0) {
+                        Write-Verbose "Verification failed: File has zero size"
+                        return $false
+                    }
+                }
+                catch {
+                    Write-Verbose "Verification failed: Could not get file info. Error: $_"
+                    return $false
+                }
+
+                return $true
+            }
+        }
+
+        Write-Verbose "Pty module replacement patch registered successfully"
+    }
+    catch {
+        Write-Error "Register-PtyModulePatch: Failed to register pty module replacement patch. Error: $_"
+        throw
+    }
+}
+
+function Register-NodeRuntimePatch {
+    <#
+    .SYNOPSIS
+    Register bundled Node runtime replacement patch for Windows installs.
+
+    .DESCRIPTION
+    Ensures a Windows `node.exe` is present in the install directory and updates
+    the legacy `node` path to point to that Windows executable content.
+    #>
+    [CmdletBinding()]
+    param()
+
+    try {
+        $script:PatchRegistry['node-runtime'] = @{
+            Description  = "Install Windows node runtime in package"
+            FilePattern  = "**/node"
+            Priority     = 2
+            Dependencies = @()
+            RequireMatch = $true
+            Apply        = {
+                param(
+                    [string]$FilePath,
+                    [hashtable]$Context
+                )
+
+                if (-not $Context.WindowsBinaries -or -not $Context.WindowsBinaries.ContainsKey('nodeRuntime')) {
+                    throw "Register-NodeRuntimePatch: Context.WindowsBinaries['nodeRuntime'] is missing"
+                }
+
+                $windowsNodePath = $Context.WindowsBinaries['nodeRuntime']
+                if ([string]::IsNullOrWhiteSpace($windowsNodePath)) {
+                    throw "Register-NodeRuntimePatch: Context.WindowsBinaries['nodeRuntime'] is null or empty"
+                }
+
+                $windowsNodePath = [System.Environment]::ExpandEnvironmentVariables($windowsNodePath)
+                if (-not [System.IO.Path]::IsPathRooted($windowsNodePath)) {
+                    $windowsNodePath = [System.IO.Path]::GetFullPath($windowsNodePath)
+                }
+
+                if (-not (Test-Path -Path $windowsNodePath -PathType Leaf)) {
+                    throw "Register-NodeRuntimePatch: Windows node runtime not found at '$windowsNodePath'"
+                }
+
+                $installDir = [System.IO.Path]::GetDirectoryName($FilePath)
+                $nodeExePath = Join-Path -Path $installDir -ChildPath "node.exe"
+
+                Copy-Item -Path $windowsNodePath -Destination $nodeExePath -Force -ErrorAction Stop
+                # Keep legacy ./node path for callers that reference it directly.
+                Copy-Item -Path $windowsNodePath -Destination $FilePath -Force -ErrorAction Stop
+            }
+            Verify       = {
+                param(
+                    [string]$FilePath,
+                    [hashtable]$Context
+                )
+
+                $installDir = [System.IO.Path]::GetDirectoryName($FilePath)
+                $nodeExePath = Join-Path -Path $installDir -ChildPath "node.exe"
+                if (-not (Test-Path -Path $nodeExePath -PathType Leaf)) {
+                    Write-Verbose "Verification failed: node.exe missing at '$nodeExePath'"
+                    return $false
+                }
+
+                try {
+                    $nodeInfo = Get-Item -Path $nodeExePath -ErrorAction Stop
+                    if ($nodeInfo.Length -eq 0) {
+                        Write-Verbose "Verification failed: node.exe has zero size"
+                        return $false
+                    }
+                }
+                catch {
+                    Write-Verbose "Verification failed reading node.exe file info: $_"
+                    return $false
+                }
+
+                return $true
+            }
+        }
+
+        Write-Verbose "Node runtime patch registered successfully"
+    }
+    catch {
+        Write-Error "Register-NodeRuntimePatch: Failed to register node runtime patch. Error: $_"
+        throw
+    }
+}
+
 function Register-RipGrepBinaryPatch {
     <#
     .SYNOPSIS
@@ -3275,11 +4017,12 @@ function Register-RipGrepBinaryPatch {
     
     try {
         $script:PatchRegistry['ripgrep-binary'] = @{
-            Description = "Replace rg binary with Windows rg.exe"
-            FilePattern = "**/rg"
-            Priority = 2
+            Description  = "Replace rg binary with Windows rg.exe"
+            FilePattern  = "**/rg"
+            Priority     = 2
             Dependencies = @()
-            Apply = {
+            RequireMatch = $true
+            Apply        = {
                 param(
                     [string]$FilePath,
                     [hashtable]$Context
@@ -3391,20 +4134,13 @@ function Register-RipGrepBinaryPatch {
                         throw "Register-RipGrepBinaryPatch: rg.exe was not copied to destination '$rgExeDestination'"
                     }
                     
-                    # Delete original rg file (if it exists)
-                    if (Test-Path -Path $FilePath -PathType Leaf) {
-                        Write-Verbose "Deleting original rg file: $FilePath"
-                        try {
-                            Remove-Item -Path $FilePath -Force -ErrorAction Stop
-                            Write-Verbose "Original rg file deleted successfully"
-                        }
-                        catch {
-                            Write-Warning "Register-RipGrepBinaryPatch: Failed to delete original rg file '$FilePath'. Error: $_"
-                            # Don't throw - the new rg.exe is in place, so this is not critical
-                        }
+                    # Keep a legacy "rg" path for codepaths that invoke ./rg directly.
+                    try {
+                        Copy-Item -Path $rgExePath -Destination $FilePath -Force -ErrorAction Stop
+                        Write-Verbose "Legacy rg compatibility binary copied successfully to: $FilePath"
                     }
-                    else {
-                        Write-Verbose "Original rg file does not exist, skipping deletion"
+                    catch {
+                        throw "Register-RipGrepBinaryPatch: Failed to create legacy rg compatibility binary at '$FilePath'. Error: $_"
                     }
                     
                     # Verify final rg.exe exists and has content
@@ -3429,7 +4165,7 @@ function Register-RipGrepBinaryPatch {
                     }
                 }
             }
-            Verify = {
+            Verify       = {
                 param(
                     [string]$FilePath,
                     [hashtable]$Context
@@ -3445,6 +4181,12 @@ function Register-RipGrepBinaryPatch {
                 # Check rg.exe exists
                 if (-not (Test-Path -Path $rgExePath -PathType Leaf)) {
                     Write-Verbose "Verification failed: rg.exe does not exist at '$rgExePath'"
+                    return $false
+                }
+
+                # Check legacy rg path exists for callers that use ./rg
+                if (-not (Test-Path -Path $FilePath -PathType Leaf)) {
+                    Write-Verbose "Verification failed: legacy rg path does not exist at '$FilePath'"
                     return $false
                 }
                 
@@ -3502,7 +4244,7 @@ function Register-StandardPatches {
     
     .DESCRIPTION
     Registers all standard patches (platform-detection, merkle-tree-module,
-    sqlite3-module, ripgrep-binary) in the patch registry. This function
+    sqlite3-module, pty-module, node-runtime, ripgrep-binary) in the patch registry. This function
     should be called to initialize the patch system before applying patches.
     After registration, validates the registry structure to ensure all
     patches are correctly defined with proper dependencies.
@@ -3526,10 +4268,59 @@ function Register-StandardPatches {
         
         # Register all standard patches (Specs 17-20)
         # Order matters for dependencies - register platform-detection first
-        Register-PlatformDetectionPatch
-        Register-MerkleTreeModulePatch
-        Register-Sqlite3ModulePatch
-        Register-RipGrepBinaryPatch
+        try {
+            Register-PlatformDetectionPatch
+            Write-Verbose "Platform detection patch registered"
+        }
+        catch {
+            Write-Error "Register-StandardPatches: Failed to register platform detection patch. Error: $_"
+            throw
+        }
+        
+        try {
+            Register-MerkleTreeModulePatch
+            Write-Verbose "Merkle tree module patch registered"
+        }
+        catch {
+            Write-Error "Register-StandardPatches: Failed to register merkle tree module patch. Error: $_"
+            throw
+        }
+        
+        try {
+            Register-Sqlite3ModulePatch
+            Write-Verbose "SQLite3 module patch registered"
+        }
+        catch {
+            Write-Error "Register-StandardPatches: Failed to register SQLite3 module patch. Error: $_"
+            throw
+        }
+
+        try {
+            Register-PtyModulePatch
+            Write-Verbose "Pty module patch registered"
+        }
+        catch {
+            Write-Error "Register-StandardPatches: Failed to register Pty module patch. Error: $_"
+            throw
+        }
+
+        try {
+            Register-NodeRuntimePatch
+            Write-Verbose "Node runtime patch registered"
+        }
+        catch {
+            Write-Error "Register-StandardPatches: Failed to register Node runtime patch. Error: $_"
+            throw
+        }
+        
+        try {
+            Register-RipGrepBinaryPatch
+            Write-Verbose "RipGrep binary patch registered"
+        }
+        catch {
+            Write-Error "Register-StandardPatches: Failed to register RipGrep binary patch. Error: $_"
+            throw
+        }
         
         Write-Verbose "All standard patches registered. Validating registry structure..."
         
@@ -3658,17 +4449,20 @@ function New-PatchContext {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$PackagePath,
         
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$CursorAgentVersion,
         
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory = $false)]
         [hashtable]$DependencyVersions = @{},
         
-        [Parameter(Mandatory=$true)]
-        [string]$CacheDirectory
+        [Parameter(Mandatory = $true)]
+        [string]$CacheDirectory,
+        
+        [Parameter(Mandatory = $false)]
+        [object]$PatcherConfig
     )
     
     try {
@@ -3774,13 +4568,60 @@ function New-PatchContext {
                 Write-Verbose "Failed to extract RipGrep version from package: $_"
             }
         }
+
+        # Pty version (for old bundled node-pty builds)
+        if ($DependencyVersions.ContainsKey("pty") -and -not [string]::IsNullOrWhiteSpace($DependencyVersions["pty"])) {
+            $dependencyVersions["pty"] = $DependencyVersions["pty"]
+            Write-Verbose "Using provided Pty version: $($dependencyVersions['pty'])"
+        }
+        else {
+            try {
+                $ptyVersion = Get-PtyVersion -PackagePath $PackagePath
+                if ($ptyVersion) {
+                    $dependencyVersions["pty"] = $ptyVersion
+                    Write-Verbose "Extracted Pty version from package: $ptyVersion"
+                }
+                else {
+                    Write-Verbose "Pty version not found in package, will use latest @lydell/node-pty-win32 prebuild"
+                }
+            }
+            catch {
+                Write-Verbose "Failed to extract Pty version from package: $_"
+            }
+        }
+
+        # Bundled Node runtime version
+        if ($DependencyVersions.ContainsKey("nodeRuntime") -and -not [string]::IsNullOrWhiteSpace($DependencyVersions["nodeRuntime"])) {
+            $dependencyVersions["nodeRuntime"] = $DependencyVersions["nodeRuntime"]
+            Write-Verbose "Using provided Node runtime version: $($dependencyVersions['nodeRuntime'])"
+        }
+        else {
+            try {
+                $nodeRuntimeVersion = Get-NodeRuntimeVersion -PackagePath $PackagePath
+                if ($nodeRuntimeVersion) {
+                    $dependencyVersions["nodeRuntime"] = $nodeRuntimeVersion
+                    Write-Verbose "Extracted Node runtime version from package: $nodeRuntimeVersion"
+                }
+                else {
+                    Write-Verbose "Node runtime version not found in package, will use latest LTS"
+                }
+            }
+            catch {
+                Write-Verbose "Failed to extract Node runtime version from package: $_"
+            }
+        }
         
         # Step 3: Load configuration for binary download info
         Write-Verbose "Loading configuration for binary download information"
-        $config = Get-PatcherConfig
+        if ($null -ne $PatcherConfig) {
+            $config = $PatcherConfig
+        }
+        else {
+            $config = Get-PatcherConfig
+        }
         
         # Ensure cache directory exists
-        Initialize-CacheDirectory -CacheDirectory $CacheDirectory | Out-Null
+        Initialize-CacheDirectory -CachePath $CacheDirectory | Out-Null
         
         # Step 4: Download/cache Windows binaries
         Write-Verbose "Downloading/caching Windows binaries"
@@ -3827,15 +4668,79 @@ function New-PatchContext {
                 $downloadInfo = Get-BinaryDownloadInfo -DependencyName "sqlite3" -Version $sqlite3Version
                 if ($downloadInfo) {
                     Write-Verbose "Downloading SQLite3 binary from GitHub"
-                    $tempPath = Join-Path -Path $env:TEMP -ChildPath "sqlite3-$(New-Guid).node"
+                    $tempArchive = Join-Path -Path $env:TEMP -ChildPath "sqlite3-$(New-Guid).tar.gz"
+                    $tempNode = Join-Path -Path $env:TEMP -ChildPath "sqlite3-$(New-Guid).node"
                     
-                    Get-GitHubReleaseAsset -Repo $downloadInfo.repo -AssetPattern $downloadInfo.assetPattern -OutPath $tempPath -ReleaseTag $downloadInfo.releaseTag
+                    $repoLower = $downloadInfo.repo.ToLowerInvariant()
+                    if ($sqlite3Version -and ($repoLower -like '*node-sqlite3*')) {
+                        $releaseTagLower = "$($downloadInfo.releaseTag)".ToLowerInvariant()
+                        $useLatestPatterns = ([string]::IsNullOrWhiteSpace($releaseTagLower) -or $releaseTagLower -eq 'latest')
+                        
+                        if ($useLatestPatterns) {
+                            # For latest, do not pin exact sqlite version in the filename.
+                            $patterns = @(
+                                "sqlite3-v\d+\.\d+\.\d+-napi-v6-win32-x64\.tar\.gz",
+                                "sqlite3-v\d+\.\d+\.\d+-napi-v3-win32-x64\.tar\.gz"
+                            )
+                            if ($windowsArch -eq 'arm64') {
+                                $patterns = @(
+                                    "sqlite3-v\d+\.\d+\.\d+-napi-v6-win32-arm64\.tar\.gz",
+                                    "sqlite3-v\d+\.\d+\.\d+-napi-v3-win32-arm64\.tar\.gz"
+                                ) + $patterns
+                            }
+                        }
+                        else {
+                            $verForAsset = $sqlite3Version.TrimStart('v')
+                            $verEscaped = [regex]::Escape($verForAsset)
+                            $patterns = @(
+                                "sqlite3-v${verEscaped}-napi-v6-win32-x64\.tar\.gz",
+                                "sqlite3-v${verEscaped}-napi-v3-win32-x64\.tar\.gz"
+                            )
+                            if ($windowsArch -eq 'arm64') {
+                                $patterns = @(
+                                    "sqlite3-v${verEscaped}-napi-v6-win32-arm64\.tar\.gz",
+                                    "sqlite3-v${verEscaped}-napi-v3-win32-arm64\.tar\.gz"
+                                ) + $patterns
+                            }
+                        }
+                        
+                        $lastError = $null
+                        $downloaded = $false
+                        foreach ($assetPattern in $patterns) {
+                            try {
+                                Remove-Item -Path $tempArchive -Force -ErrorAction SilentlyContinue
+                                Get-GitHubReleaseAsset -Repo $downloadInfo.repo -AssetPattern $assetPattern -OutPath $tempArchive -ReleaseTag $downloadInfo.releaseTag
+                                $downloaded = $true
+                                break
+                            }
+                            catch {
+                                $lastError = $_
+                                Write-Verbose "SQLite3 asset pattern '$assetPattern' not found or failed: $_"
+                            }
+                        }
+                        if (-not $downloaded) {
+                            throw "New-PatchContext: No node-sqlite3 prebuilt .tar.gz matched for version '$sqlite3Version' (release tag '$($downloadInfo.releaseTag)'). Last error: $lastError"
+                        }
+                        
+                        try {
+                            Expand-Sqlite3GithubArchiveToNodeFile -ArchivePath $tempArchive -DestinationNodePath $tempNode
+                        }
+                        finally {
+                            Remove-Item -Path $tempArchive -Force -ErrorAction SilentlyContinue
+                        }
+                    }
+                    else {
+                        Get-GitHubReleaseAsset -Repo $downloadInfo.repo -AssetPattern $downloadInfo.assetPattern -OutPath $tempNode -ReleaseTag $downloadInfo.releaseTag
+                    }
                     
-                    $cachedPath = Save-BinaryToCache -SourcePath $tempPath -CacheKey $cacheKey -CacheDirectory $CacheDirectory
+                    if (-not (Test-Path -Path $tempNode -PathType Leaf)) {
+                        throw "New-PatchContext: SQLite3 binary file missing after download at '$tempNode'"
+                    }
+                    
+                    $cachedPath = Save-BinaryToCache -SourcePath $tempNode -CacheKey $cacheKey -CacheDirectory $CacheDirectory
                     $windowsBinaries["sqlite3"] = $cachedPath
                     
-                    # Clean up temp file
-                    Remove-Item -Path $tempPath -ErrorAction SilentlyContinue
+                    Remove-Item -Path $tempNode -ErrorAction SilentlyContinue
                     Write-Verbose "Downloaded and cached SQLite3 binary: $cachedPath"
                 }
                 else {
@@ -3921,15 +4826,118 @@ function New-PatchContext {
             Write-Error "New-PatchContext: Failed to get RipGrep binary. Error: $_"
             throw
         }
+
+        # Pty binary (.tgz from npm registry -> pty.node)
+        try {
+            $ptyVersion = $dependencyVersions["pty"]
+            $ptyPackageName = if ($windowsArch -eq 'arm64') { "@lydell/node-pty-win32-arm64" } else { "@lydell/node-pty-win32-x64" }
+            $cacheKey = if ($ptyVersion) { "pty-v$ptyVersion-win32-$windowsArch" } else { "pty-latest-win32-$windowsArch" }
+
+            $cachedPath = Get-CachedBinary -CacheKey $cacheKey -CacheDirectory $CacheDirectory
+            if ($cachedPath) {
+                $windowsBinaries["pty"] = $cachedPath
+                Write-Verbose "Using cached Pty binary: $cachedPath"
+            }
+            else {
+                Write-Verbose "Downloading Pty binary from npm registry package '$ptyPackageName'"
+                $registryPackagePath = [System.Uri]::EscapeDataString($ptyPackageName)
+                $registryUrl = "https://registry.npmjs.org/$registryPackagePath"
+                $registry = Invoke-RestMethod -Uri $registryUrl -Method Get -TimeoutSec 30 -ErrorAction Stop
+
+                $resolvedVersion = $ptyVersion
+                if ([string]::IsNullOrWhiteSpace($resolvedVersion) -or -not $registry.versions.$resolvedVersion) {
+                    $trimmed = if ([string]::IsNullOrWhiteSpace($resolvedVersion)) { $null } else { $resolvedVersion.TrimStart('v') }
+                    if ($trimmed -and $registry.versions.$trimmed) {
+                        $resolvedVersion = $trimmed
+                    }
+                    else {
+                        $resolvedVersion = $registry.'dist-tags'.latest
+                    }
+                }
+
+                if ([string]::IsNullOrWhiteSpace($resolvedVersion) -or -not $registry.versions.$resolvedVersion) {
+                    throw "New-PatchContext: Could not resolve Pty package version for '$ptyPackageName' from requested '$ptyVersion'"
+                }
+
+                $tarballUrl = $registry.versions.$resolvedVersion.dist.tarball
+                if ([string]::IsNullOrWhiteSpace($tarballUrl)) {
+                    throw "New-PatchContext: npm registry response missing tarball URL for '$ptyPackageName@$resolvedVersion'"
+                }
+
+                $tempTgz = Join-Path -Path $env:TEMP -ChildPath "pty-$(New-Guid).tgz"
+                $tempNode = Join-Path -Path $env:TEMP -ChildPath "pty-$(New-Guid).node"
+                try {
+                    Get-FileWithProgress -Url $tarballUrl -OutPath $tempTgz
+                    Expand-NpmTgzToNodeFile -ArchivePath $tempTgz -DestinationNodePath $tempNode -NodeFileName "pty.node"
+                    $cachedPath = Save-BinaryToCache -SourcePath $tempNode -CacheKey $cacheKey -CacheDirectory $CacheDirectory
+                    $windowsBinaries["pty"] = $cachedPath
+                    Write-Verbose "Downloaded and cached Pty binary: $cachedPath (source: $ptyPackageName@$resolvedVersion)"
+                }
+                finally {
+                    Remove-Item -Path $tempTgz -ErrorAction SilentlyContinue
+                    Remove-Item -Path $tempNode -ErrorAction SilentlyContinue
+                }
+            }
+        }
+        catch {
+            Write-Error "New-PatchContext: Failed to get Pty binary. Error: $_"
+            throw
+        }
+
+        # Node runtime binary (node.exe from official Node.js distribution)
+        try {
+            $nodeRuntimeVersion = $dependencyVersions["nodeRuntime"]
+            $cacheKey = if ($nodeRuntimeVersion) { "node-runtime-v$nodeRuntimeVersion-win-$windowsArch" } else { "node-runtime-latest-win-$windowsArch" }
+
+            $cachedPath = Get-CachedBinary -CacheKey $cacheKey -CacheDirectory $CacheDirectory
+            if ($cachedPath) {
+                $windowsBinaries["nodeRuntime"] = $cachedPath
+                Write-Verbose "Using cached Node runtime binary: $cachedPath"
+            }
+            else {
+                if ([string]::IsNullOrWhiteSpace($nodeRuntimeVersion)) {
+                    $nodeIndex = Invoke-RestMethod -Uri "https://nodejs.org/dist/index.json" -Method Get -TimeoutSec 30 -ErrorAction Stop
+                    $ltsEntry = $nodeIndex | Where-Object { $_.lts -and $_.lts -ne $false } | Select-Object -First 1
+                    if (-not $ltsEntry -or [string]::IsNullOrWhiteSpace($ltsEntry.version)) {
+                        throw "New-PatchContext: Could not resolve latest LTS Node version from nodejs.org index.json"
+                    }
+                    $nodeRuntimeVersion = ($ltsEntry.version -replace '^v', '')
+                    $dependencyVersions["nodeRuntime"] = $nodeRuntimeVersion
+                    $cacheKey = "node-runtime-v$nodeRuntimeVersion-win-$windowsArch"
+                }
+
+                $nodeArch = if ($windowsArch -eq 'arm64') { 'arm64' } else { 'x64' }
+                $zipUrl = "https://nodejs.org/dist/v$nodeRuntimeVersion/node-v$nodeRuntimeVersion-win-$nodeArch.zip"
+                $tempZip = Join-Path -Path $env:TEMP -ChildPath "node-runtime-$(New-Guid).zip"
+                $tempExe = Join-Path -Path $env:TEMP -ChildPath "node-runtime-$(New-Guid).exe"
+
+                try {
+                    Write-Verbose "Downloading Node runtime from: $zipUrl"
+                    Get-FileWithProgress -Url $zipUrl -OutPath $tempZip
+                    Expand-NodeZipToExe -ArchivePath $tempZip -DestinationExePath $tempExe
+                    $cachedPath = Save-BinaryToCache -SourcePath $tempExe -CacheKey $cacheKey -CacheDirectory $CacheDirectory
+                    $windowsBinaries["nodeRuntime"] = $cachedPath
+                    Write-Verbose "Downloaded and cached Node runtime binary: $cachedPath"
+                }
+                finally {
+                    Remove-Item -Path $tempZip -ErrorAction SilentlyContinue
+                    Remove-Item -Path $tempExe -ErrorAction SilentlyContinue
+                }
+            }
+        }
+        catch {
+            Write-Error "New-PatchContext: Failed to get Node runtime binary. Error: $_"
+            throw
+        }
         
         # Step 5: Build context hashtable
         $context = @{
-            PackagePath = $PackagePath
-            CursorAgentVersion = $CursorAgentVersion
+            PackagePath         = $PackagePath
+            CursorAgentVersion  = $CursorAgentVersion
             WindowsArchitecture = $windowsArch
-            DependencyVersions = $dependencyVersions
-            WindowsBinaries = $windowsBinaries
-            CacheDirectory = $CacheDirectory
+            DependencyVersions  = $dependencyVersions
+            WindowsBinaries     = $windowsBinaries
+            CacheDirectory      = $CacheDirectory
         }
         
         Write-Verbose "Patch context built successfully"
@@ -3979,25 +4987,25 @@ function Write-PatchStateMarker {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$InstallationPath,
         
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$CursorAgentVersion,
         
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string[]]$AppliedPatches,
         
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [hashtable]$PatchResults,
         
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [hashtable]$DependencyVersions,
         
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory = $false)]
         [string]$PatcherVersion = "1.0.0",
         
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory = $false)]
         [string]$PatchHash
     )
     
@@ -4019,12 +5027,12 @@ function Write-PatchStateMarker {
         # Build marker structure
         $marker = @{
             cursorAgentVersion = $CursorAgentVersion
-            patchTimestamp = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
-            patcherVersion = $PatcherVersion
-            appliedPatches = $AppliedPatches
-            patchResults = $PatchResults
+            patchTimestamp     = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+            patcherVersion     = $PatcherVersion
+            appliedPatches     = $AppliedPatches
+            patchResults       = $PatchResults
             dependencyVersions = $DependencyVersions
-            patchHash = $PatchHash
+            patchHash          = $PatchHash
         }
         
         # Convert to JSON
@@ -4053,7 +5061,7 @@ function Read-PatchStateMarker {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$InstallationPath
     )
     
@@ -4071,12 +5079,12 @@ function Read-PatchStateMarker {
         # Convert to hashtable
         $result = @{
             cursorAgentVersion = $marker.cursorAgentVersion
-            patchTimestamp = $marker.patchTimestamp
-            patcherVersion = $marker.patcherVersion
-            appliedPatches = $marker.appliedPatches
-            patchResults = $marker.patchResults
+            patchTimestamp     = $marker.patchTimestamp
+            patcherVersion     = $marker.patcherVersion
+            appliedPatches     = $marker.appliedPatches
+            patchResults       = $marker.patchResults
             dependencyVersions = $marker.dependencyVersions
-            patchHash = $marker.patchHash
+            patchHash          = $marker.patchHash
         }
         
         Write-Verbose "Patch state marker read successfully from: $markerPath"
@@ -4099,10 +5107,10 @@ function Test-InstallationPatched {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$InstallationPath,
         
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory = $false)]
         [string[]]$RequiredPatches = @(
             "platform-detection",
             "merkle-tree-module",
@@ -4110,15 +5118,15 @@ function Test-InstallationPatched {
             "ripgrep-binary"
         ),
         
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory = $false)]
         [switch]$VerifyFiles
     )
     
     try {
         $result = @{
-            IsPatched = $false
-            MissingPatches = @()
-            MarkerData = $null
+            IsPatched           = $false
+            MissingPatches      = @()
+            MarkerData          = $null
             VerificationResults = @{}
         }
         
@@ -4155,9 +5163,9 @@ function Test-InstallationPatched {
             # Basic file existence checks
             $verificationResults = @{
                 PlatformDetectionPresent = $false
-                MerkleTreeBinaryExists = $false
-                Sqlite3BinaryExists = $false
-                RipGrepBinaryExists = $false
+                MerkleTreeBinaryExists   = $false
+                Sqlite3BinaryExists      = $false
+                RipGrepBinaryExists      = $false
             }
             
             # Check platform detection (search for win32 in native.js files)
@@ -4197,7 +5205,7 @@ function New-CursorAgentLauncher {
     Generate cursor-agent launcher script with update interception support.
     
     .DESCRIPTION
-    Creates a batch script that launches cursor-agent using Bun (or Node.js fallback).
+    Creates a batch script that launches cursor-agent using Node.js.
     In standard mode, simply invokes the index.js file. In update interception mode,
     intercepts update/upgrade commands and triggers auto-patching after updates.
     
@@ -4213,8 +5221,7 @@ function New-CursorAgentLauncher {
     
     .PARAMETER EnableUpdateInterception
     Enable update interception mode. When enabled, intercepts update/upgrade commands
-    and triggers auto-patching. Requires Spec 037 (Invoke-CursorAgentUpdateWithPatch)
-    to be fully functional.
+    and triggers auto-patching via Invoke-CursorAgentUpdateWithPatch.
     
     .OUTPUTS
     string. Returns the absolute path to the created launcher script.
@@ -4229,16 +5236,16 @@ function New-CursorAgentLauncher {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$InstallPath,
         
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory = $false)]
         [string]$LauncherName = "cursor-agent.bat",
         
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory = $false)]
         [string]$RealCursorAgentPath,
         
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory = $false)]
         [switch]$EnableUpdateInterception
     )
     
@@ -4295,7 +5302,7 @@ if (Test-Path `$modulePath) {
 # Check if update/upgrade command
 if (`$args.Count -gt 0 -and (`$args[0] -eq "update" -or `$args[0] -eq "upgrade")) {
     # Intercept update command
-    # Note: Requires Spec 037 (Invoke-CursorAgentUpdateWithPatch) to be fully functional
+    # Uses Invoke-CursorAgentUpdateWithPatch when available
     try {
         if (Get-Command Invoke-CursorAgentUpdateWithPatch -ErrorAction SilentlyContinue) {
             `$updateArgs = if (`$args.Count -gt 1) { `$args[1..(`$args.Length-1)] } else { @() }
@@ -4314,7 +5321,7 @@ if (`$args.Count -gt 0 -and (`$args[0] -eq "update" -or `$args[0] -eq "upgrade")
                 exit `$result.UpdateExitCode
             }
         } else {
-            Write-Warning "Update interception not fully implemented (Spec 037 required). Running update without auto-patch."
+            Write-Warning "Update interception command not available. Running update without auto-patch."
             # Fall through to normal execution
         }
     } catch {
@@ -4335,11 +5342,13 @@ if (-not [string]::IsNullOrWhiteSpace(`$realPath) -and (Test-Path `$realPath)) {
         & `$cmd.Source @args
         exit `$LASTEXITCODE
     } else {
-        # Execute directly using Bun/Node
+        # Execute directly using Node.js
         `$indexJs = Join-Path `$PSScriptRoot "index.js"
         if (Test-Path `$indexJs) {
-            bun `$indexJs @args 2>`$null
-            if (`$LASTEXITCODE -ne 0) {
+            `$localNode = Join-Path `$PSScriptRoot "node.exe"
+            if (Test-Path `$localNode) {
+                & `$localNode `$indexJs @args
+            } else {
                 node `$indexJs @args
             }
             exit `$LASTEXITCODE
@@ -4368,7 +5377,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0$wrapperScriptName
             $scriptContent = @"
 @echo off
 cd /d "%~dp0"
-bun index.js %* 2>nul || node index.js %*
+if exist "%~dp0node.exe" (
+  "%~dp0node.exe" index.js %*
+) else (
+  node index.js %*
+)
 "@
         }
         
@@ -4407,6 +5420,9 @@ function Invoke-CursorAgentPatch {
     .PARAMETER InstallPath
     Installation path for the patched package. Defaults to config value.
     
+    .PARAMETER ConfigPath
+    Path to patcher JSON configuration. When omitted, uses Get-PatcherConfig defaults (typically .\patcher-config.json).
+    
     .PARAMETER WhatIf
     Show what would be done without actually performing operations.
     
@@ -4418,32 +5434,51 @@ function Invoke-CursorAgentPatch {
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory = $false)]
         [string]$Version,
         
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory = $false)]
         [string]$InstallPath,
         
-        [Parameter(Mandatory=$false)]
-        [switch]$WhatIf,
+        [Parameter(Mandatory = $false)]
+        [string]$ConfigPath,
         
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory = $false)]
         [string]$PatchExistingInstallation,
         
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory = $false)]
         [switch]$Force
     )
     
     try {
         Write-Verbose "Starting Cursor Agent patching workflow"
         
-        # Step 1: Load configuration
-        $config = Get-PatcherConfig
-        Write-Verbose "Configuration loaded"
+        try {
+            # Step 1: Load configuration
+            Write-Verbose "Step 1: Loading configuration..."
+            if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
+                $config = Get-PatcherConfig -ConfigPath $ConfigPath
+            }
+            else {
+                $config = Get-PatcherConfig
+            }
+            Write-Verbose "Configuration loaded"
+        }
+        catch {
+            Write-Error "Invoke-CursorAgentPatch: Failed at Step 1 (Load configuration). Error: $_"
+            throw
+        }
         
-        # Step 2: Initialize cache
-        $cacheDir = Initialize-CacheDirectory -CacheDirectory $config.cache.directory
-        Write-Verbose "Cache directory initialized: $cacheDir"
+        try {
+            # Step 2: Initialize cache
+            Write-Verbose "Step 2: Initializing cache..."
+            $cacheDir = Initialize-CacheDirectory -CachePath $config.cache.directory
+            Write-Verbose "Cache directory initialized: $cacheDir"
+        }
+        catch {
+            Write-Error "Invoke-CursorAgentPatch: Failed at Step 2 (Initialize cache). Error: $_"
+            throw
+        }
         
         # Determine mode
         $inPlaceMode = -not [string]::IsNullOrWhiteSpace($PatchExistingInstallation)
@@ -4473,9 +5508,9 @@ function Invoke-CursorAgentPatch {
                 if ($patchStatus.IsPatched) {
                     Write-Host "Installation is already patched. Use -Force to re-patch." -ForegroundColor Yellow
                     return @{
-                        Success = $true
+                        Success        = $true
                         AlreadyPatched = $true
-                        Message = "Installation already patched"
+                        Message        = "Installation already patched"
                     }
                 }
             }
@@ -4496,7 +5531,7 @@ function Invoke-CursorAgentPatch {
             if ([string]::IsNullOrWhiteSpace($cursorAgentVersion)) {
                 # Try to extract from install script as fallback
                 try {
-                    $installScript = Get-CursorAgentInstallScript
+                    $installScript = Get-CursorAgentInstallScript -InstallUrl $config.cursorAgent.installScriptUrl
                     $cursorAgentVersion = Get-CursorAgentVersion -InstallScript $installScript
                 }
                 catch {
@@ -4506,13 +5541,13 @@ function Invoke-CursorAgentPatch {
             }
             
             # Build patch context
-            $context = New-PatchContext -PackagePath $installationPath -CursorAgentVersion $cursorAgentVersion -CacheDirectory $cacheDir
+            $context = New-PatchContext -PackagePath $installationPath -CursorAgentVersion $cursorAgentVersion -CacheDirectory $cacheDir -PatcherConfig $config
             
             # Register patches
             Register-StandardPatches
             
             # Resolve patch order
-            $patchOrder = Resolve-PatchDependencies
+            $patchOrder = Resolve-PatchDependencies -PatchRegistry $script:PatchRegistry
             
             # Apply patches
             $allPatchResults = @{}
@@ -4522,12 +5557,12 @@ function Invoke-CursorAgentPatch {
                 $patch = $script:PatchRegistry[$patchId]
                 Write-Verbose "Applying patch: $patchId"
                 
-                $patchResult = Invoke-Patch -PatchDefinition $patch -PackagePath $installationPath -Context $context -WhatIf:$WhatIf
+                $patchResult = Invoke-Patch -PatchDefinition $patch -PackagePath $installationPath -Context $context
                 
                 $allPatchResults[$patchId] = @{
-                    success = $patchResult.Success
-                    filesModified = @() # Would need to track this in Invoke-Patch
-                    errors = $patchResult.Errors
+                    success       = $patchResult.Success
+                    filesModified = @()
+                    errors        = $patchResult.Errors
                 }
                 
                 if ($patchResult.Success) {
@@ -4536,16 +5571,16 @@ function Invoke-CursorAgentPatch {
             }
             
             # Write patch state marker
-            if (-not $WhatIf) {
+            if (-not $WhatIfPreference) {
                 Write-PatchStateMarker -InstallationPath $installationPath -CursorAgentVersion $cursorAgentVersion -AppliedPatches $allAppliedPatches -PatchResults $allPatchResults -DependencyVersions $context.DependencyVersions
             }
             
             return @{
-                Success = $true
-                Mode = "InPlace"
+                Success          = $true
+                Mode             = "InPlace"
                 InstallationPath = $installationPath
-                AppliedPatches = $allAppliedPatches
-                PatchResults = $allPatchResults
+                AppliedPatches   = $allAppliedPatches
+                PatchResults     = $allPatchResults
             }
         }
         else {
@@ -4555,14 +5590,14 @@ function Invoke-CursorAgentPatch {
             # Step 3: Get Cursor Agent version
             if ([string]::IsNullOrWhiteSpace($Version)) {
                 Write-Verbose "Auto-detecting Cursor Agent version"
-                $installScript = Get-CursorAgentInstallScript
+                $installScript = Get-CursorAgentInstallScript -InstallUrl $config.cursorAgent.installScriptUrl
                 $Version = Get-CursorAgentVersion -InstallScript $installScript
             }
             Write-Verbose "Cursor Agent version: $Version"
             
             # Step 4: Download package
             $packagePath = $null
-            if (-not $WhatIf) {
+            if (-not $WhatIfPreference) {
                 $packageOutPath = Join-Path -Path $cacheDir -ChildPath "packages\cursor-agent-$Version.tar.gz"
                 $packagePath = Get-CursorAgentPackage -Version $Version -SourceOs $config.cursorAgent.sourceOs -SourceArch $config.cursorAgent.sourceArch -OutPath $packageOutPath
                 Write-Verbose "Package downloaded: $packagePath"
@@ -4573,32 +5608,46 @@ function Invoke-CursorAgentPatch {
             
             # Step 5: Extract package
             $extractedPath = $null
-            if (-not $WhatIf -and $packagePath) {
+            if (-not $WhatIfPreference -and $packagePath) {
                 $extractDir = Join-Path -Path $env:TEMP -ChildPath "cursor-agent-extract-$(New-Guid)"
-                $extractedPath = Expand-CursorAgentPackage -PackagePath $packagePath -OutputDirectory $extractDir
+                $extractedPath = Expand-CursorAgentPackage -ArchivePath $packagePath -OutDirectory $extractDir
                 Write-Verbose "Package extracted: $extractedPath"
             }
             else {
                 Write-Host "What if: Would extract package"
             }
             
-            if ($WhatIf) {
+            if ($WhatIfPreference) {
                 return @{
                     Success = $true
-                    Mode = "Standard"
-                    WhatIf = $true
+                    Mode    = "Standard"
+                    WhatIf  = $true
                     Version = $Version
                 }
             }
             
+            # Validate extracted path exists
+            if ([string]::IsNullOrWhiteSpace($extractedPath)) {
+                throw "Invoke-CursorAgentPatch: Package extraction failed or extracted path is null. Cannot proceed with patching."
+            }
+            
+            Write-Verbose "About to call New-PatchContext with PackagePath='$extractedPath', Version='$Version', CacheDirectory='$cacheDir'"
+            
             # Step 6: Build patch context
-            $context = New-PatchContext -PackagePath $extractedPath -CursorAgentVersion $Version -CacheDirectory $cacheDir
+            try {
+                $context = New-PatchContext -PackagePath $extractedPath -CursorAgentVersion $Version -CacheDirectory $cacheDir -PatcherConfig $config
+            }
+            catch {
+                Write-Error "Invoke-CursorAgentPatch: Failed to call New-PatchContext. Error: $_"
+                Write-Error "Invoke-CursorAgentPatch: PackagePath='$extractedPath', CursorAgentVersion='$Version', CacheDirectory='$cacheDir'"
+                throw
+            }
             
             # Step 7: Register patches
             Register-StandardPatches
             
             # Step 8: Resolve patch order
-            $patchOrder = Resolve-PatchDependencies
+            $patchOrder = Resolve-PatchDependencies -PatchRegistry $script:PatchRegistry
             
             # Step 9: Apply patches
             $allPatchResults = @{}
@@ -4608,12 +5657,12 @@ function Invoke-CursorAgentPatch {
                 $patch = $script:PatchRegistry[$patchId]
                 Write-Verbose "Applying patch: $patchId"
                 
-                $patchResult = Invoke-Patch -PatchDefinition $patch -PackagePath $extractedPath -Context $context -WhatIf:$WhatIf
+                $patchResult = Invoke-Patch -PatchDefinition $patch -PackagePath $extractedPath -Context $context
                 
                 $allPatchResults[$patchId] = @{
-                    success = $patchResult.Success
+                    success       = $patchResult.Success
                     filesModified = @()
-                    errors = $patchResult.Errors
+                    errors        = $patchResult.Errors
                 }
                 
                 if ($patchResult.Success) {
@@ -4630,11 +5679,23 @@ function Invoke-CursorAgentPatch {
                 $InstallPath = [System.IO.Path]::GetFullPath($InstallPath)
             }
             
+            # Determine actual package content root (some archives unpack into dist-package/)
+            $packageContentRoot = $extractedPath
+            $distPackagePath = Join-Path -Path $extractedPath -ChildPath "dist-package"
+            if (Test-Path -Path $distPackagePath -PathType Container) {
+                $packageContentRoot = $distPackagePath
+            }
+            $packageIndexPath = Join-Path -Path $packageContentRoot -ChildPath "index.js"
+            if (-not (Test-Path -Path $packageIndexPath -PathType Leaf)) {
+                throw "Invoke-CursorAgentPatch: index.js not found in extracted package root '$packageContentRoot'"
+            }
+
             Write-Verbose "Copying patched package to: $InstallPath"
             if (Test-Path -Path $InstallPath) {
                 Remove-Item -Path $InstallPath -Recurse -Force -ErrorAction Stop
             }
-            Copy-Item -Path $extractedPath -Destination $InstallPath -Recurse -Force -ErrorAction Stop
+            New-Item -Path $InstallPath -ItemType Directory -Force -ErrorAction Stop | Out-Null
+            Copy-Item -Path (Join-Path -Path $packageContentRoot -ChildPath "*") -Destination $InstallPath -Recurse -Force -ErrorAction Stop
             
             # Step 11: Create launcher script
             if ($config.installation.createLauncher) {
@@ -4648,12 +5709,12 @@ function Invoke-CursorAgentPatch {
             Remove-Item -Path $extractedPath -Recurse -Force -ErrorAction SilentlyContinue
             
             return @{
-                Success = $true
-                Mode = "Standard"
-                Version = $Version
+                Success          = $true
+                Mode             = "Standard"
+                Version          = $Version
                 InstallationPath = $InstallPath
-                AppliedPatches = $allAppliedPatches
-                PatchResults = $allPatchResults
+                AppliedPatches   = $allAppliedPatches
+                PatchResults     = $allPatchResults
             }
         }
     }
@@ -4673,15 +5734,28 @@ function Invoke-PatchExistingInstallation {
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$InstallationPath,
         
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory = $false)]
+        [string]$ConfigPath,
+        
+        [Parameter(Mandatory = $false)]
         [switch]$Force
     )
     
-    return Invoke-CursorAgentPatch -PatchExistingInstallation $InstallationPath -Force:$Force
+    $invokeParams = @{
+        PatchExistingInstallation = $InstallationPath
+        Force                       = $Force
+    }
+    if ($WhatIfPreference) { $invokeParams['WhatIf'] = $true }
+    if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
+        $invokeParams['ConfigPath'] = $ConfigPath
+    }
+    return Invoke-CursorAgentPatch @invokeParams
 }
+
+#endregion
 
 function Resolve-LauncherTarget {
     <#
@@ -4689,8 +5763,8 @@ function Resolve-LauncherTarget {
     Resolve the target path of a cursor-agent launcher (symlink, shortcut, or script).
     
     .DESCRIPTION
-    Attempts multiple methods to resolve the actual target path of a launcher:
-    - PowerShell link resolution (symlinks/junctions)
+    Attempts to resolve the target of a cursor-agent launcher using multiple methods:
+    - PowerShell Link Resolution (symlinks/junctions)
     - Windows shortcut (.lnk) files
     - Script file parsing (bash/PowerShell scripts)
     #>
@@ -4989,9 +6063,6 @@ function Invoke-CursorAgentUpdateWithPatch {
         [string[]]$UpdateArguments,
         
         [Parameter(Mandatory=$false)]
-        [switch]$WhatIf,
-        
-        [Parameter(Mandatory=$false)]
         [switch]$Force
     )
     
@@ -5047,7 +6118,7 @@ function Invoke-CursorAgentUpdateWithPatch {
         # Step 2: Execute cursor-agent update command
         Write-Verbose "Executing: $foundLauncher update $($UpdateArguments -join ' ')"
         
-        if ($WhatIf) {
+        if ($WhatIfPreference) {
             Write-Host "WhatIf: Would execute: $foundLauncher update $($UpdateArguments -join ' ')" -ForegroundColor Yellow
             $result.UpdateSuccess = $true
             $result.UpdateExitCode = 0

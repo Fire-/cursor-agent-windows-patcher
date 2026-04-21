@@ -12,7 +12,7 @@
 - Windows Version: _______________
 - PowerShell Version: _______________
 - Architecture: _______________ (x64/arm64)
-- Bun/Node.js Version: _______________
+- Node.js Version: _______________
 - 7-Zip Installed: _______________ (Yes/No)
 - Internet Connection: _______________ (Yes/No)
 - Administrator Privileges: _______________ (Yes/No)
@@ -43,7 +43,7 @@
 - [ ] Progress indicators show download/extraction progress
 - [ ] Installation directory created with correct structure
 - [ ] Launcher script exists and is executable
-- [ ] Cursor Agent starts (may fail later due to missing Bun/Node, but should get past initial load)
+- [ ] Cursor Agent starts (may fail later due to missing Node.js, but should get past initial load)
 - [ ] Cache directory contains downloaded binaries
 - [ ] Patch state marker file exists
 

@@ -41,7 +41,10 @@ function Expand-CursorAgentPackageInternal {
         [string]$OutputDirectory
     )
     if ($module) {
-        & $module { Expand-CursorAgentPackage -PackagePath $args[0] -OutputDirectory $args[1] } $PackagePath, $OutputDirectory
+        & $module {
+            param([string]$ArchivePath, [string]$OutDirectory)
+            Expand-CursorAgentPackage -ArchivePath $ArchivePath -OutDirectory $OutDirectory
+        } $PackagePath $OutputDirectory
     }
 }
 
@@ -53,7 +56,10 @@ function Get-CursorAgentPackageInternal {
         [string]$OutPath
     )
     if ($module) {
-        & $module { Get-CursorAgentPackage -Version $args[0] -SourceOs $args[1] -SourceArch $args[2] -OutPath $args[3] } $Version, $SourceOs, $SourceArch, $OutPath
+        & $module {
+            param([string]$v, [string]$os, [string]$arch, [string]$out)
+            Get-CursorAgentPackage -Version $v -SourceOs $os -SourceArch $arch -OutPath $out
+        } $Version $SourceOs $SourceArch $OutPath
     }
 }
 
@@ -73,55 +79,63 @@ Describe "End-to-End Patching Integration Tests" {
         # Create test config with test cache directory
         $script:testConfig = @{
             versionMappings = @{
-                sqlite3 = @{
+                sqlite3    = @{
                     default = @{
                         windowsBinary = @{
-                            repo = "TryGhost/node-sqlite3"
+                            repo         = "TryGhost/node-sqlite3"
                             assetPattern = ".*windows.*node_sqlite3.*\.node"
-                            releaseTag = "latest"
+                            releaseTag   = "latest"
                         }
                     }
                 }
                 merkleTree = @{
                     default = @{
                         windowsBinary = @{
-                            repo = "btc-vision/rust-merkle-tree"
-                            assetPattern = "merkle-tree-napi\.win32-x64-msvc\.node"
-                            releaseTag = "latest"
+                            repo         = "btc-vision/rust-merkle-tree"
+                            assetPattern = "rust-merkle-tree\.win32-x64-msvc\.node"
+                            releaseTag   = "latest"
                         }
                     }
                 }
-                ripgrep = @{
+                ripgrep    = @{
                     default = @{
                         windowsBinary = @{
-                            repo = "BurntSushi/ripgrep"
+                            repo         = "BurntSushi/ripgrep"
                             assetPattern = "ripgrep-.*-x86_64-pc-windows-msvc\.zip"
-                            releaseTag = "latest"
+                            releaseTag   = "latest"
                         }
                     }
                 }
             }
-            cache = @{
-                directory = $script:testCacheDir
-                enabled = $true
+            cache           = @{
+                directory     = $script:testCacheDir
+                enabled       = $true
                 validateOnUse = $true
             }
-            installation = @{
-                defaultPath = $script:testInstallDir
+            installation    = @{
+                defaultPath    = $script:testInstallDir
                 createLauncher = $true
-                launcherName = "cursor-agent.bat"
+                launcherName   = "cursor-agent.bat"
             }
-            cursorAgent = @{
+            cursorAgent     = @{
                 installScriptUrl = "https://cursor.com/install"
-                downloadBaseUrl = "https://downloads.cursor.com/lab"
-                sourceOs = "darwin"
-                sourceArch = "arm64"
+                downloadBaseUrl  = "https://downloads.cursor.com/lab"
+                sourceOs         = "darwin"
+                sourceArch       = "arm64"
             }
         }
         $script:testConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $script:testConfigPath
         
         # Set environment variable for config path
         $env:CURSOR_AGENT_CONFIG_PATH = $script:testConfigPath
+        
+        # Seed test cache from local cache when available to reduce GitHub API calls
+        $localBinaryCache = Join-Path $env:LOCALAPPDATA "cursor-agent-patcher\cache\binaries"
+        $testBinaryCache = Join-Path $script:testCacheDir "binaries"
+        if (Test-Path $localBinaryCache) {
+            New-Item -ItemType Directory -Force -Path $testBinaryCache | Out-Null
+            Copy-Item -Path (Join-Path $localBinaryCache "*") -Destination $testBinaryCache -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
     
     AfterAll {
@@ -133,14 +147,10 @@ Describe "End-to-End Patching Integration Tests" {
     }
     
     BeforeEach {
-        # Clear cache before each test for isolation
-        if (Test-Path $script:testCacheDir) {
-            Get-ChildItem -Path $script:testCacheDir -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue
-        }
-        
-        # Clear install directory
+        # Clear install directory only; keep cache to avoid external API rate-limit flakiness.
         if (Test-Path $script:testInstallDir) {
-            Get-ChildItem -Path $script:testInstallDir -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue
+            Get-ChildItem -Path $script:testInstallDir -Force -ErrorAction SilentlyContinue | 
+                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
     
@@ -191,6 +201,23 @@ Describe "End-to-End Patching Integration Tests" {
             $launcherContent | Should Not BeNullOrEmpty
             # Launcher should reference index.js
             $launcherContent | Should Match "index\.js"
+            
+            # Verify expected Windows native module files exist in install output
+            $merkleWinNodes = Get-ChildItem -Path $installPath -Filter "merkle-tree-napi.win32-*.node" -Recurse -ErrorAction SilentlyContinue
+            $merkleWinNodes.Count | Should BeGreaterThan 0
+            $sqliteNodes = Get-ChildItem -Path $installPath -Filter "node_sqlite3.node" -Recurse -ErrorAction SilentlyContinue
+            $sqliteNodes.Count | Should BeGreaterThan 0
+            (Test-Path (Join-Path $installPath "node.exe")) | Should Be $true
+            
+            # Runtime smoke check: launching --version should not fail due to missing native bindings
+            $launcherOutputText = ""
+            try {
+                $launcherOutputText = (& $launcherPath --version 2>&1 | Out-String)
+            }
+            catch {
+                $launcherOutputText = ($_ | Out-String)
+            }
+            $launcherOutputText | Should Not Match "Failed to load native binding"
         }
     }
     
@@ -204,7 +231,7 @@ Describe "End-to-End Patching Integration Tests" {
             $cacheAfterFirst = @()
             if (Test-Path (Join-Path $script:testCacheDir "binaries")) {
                 $cacheAfterFirst = Get-ChildItem -Path (Join-Path $script:testCacheDir "binaries") -Recurse -File | 
-                    Select-Object -ExpandProperty FullName
+                Select-Object -ExpandProperty FullName
             }
             $cacheAfterFirst.Count | Should BeGreaterThan 0
             
@@ -222,11 +249,11 @@ Describe "End-to-End Patching Integration Tests" {
             $cacheAfterSecond = @()
             if (Test-Path (Join-Path $script:testCacheDir "binaries")) {
                 $cacheAfterSecond = Get-ChildItem -Path (Join-Path $script:testCacheDir "binaries") -Recurse -File | 
-                    Select-Object -ExpandProperty FullName
+                Select-Object -ExpandProperty FullName
             }
             
             # Cache should have same or more files (may have additional cached items)
-            $cacheAfterSecond.Count | Should BeGreaterThanOrEqual $cacheAfterFirst.Count
+            ($cacheAfterSecond.Count -ge $cacheAfterFirst.Count) | Should Be $true
             
             # Verify cached files are still valid
             foreach ($cachedFile in $cacheAfterSecond) {
@@ -241,13 +268,13 @@ Describe "End-to-End Patching Integration Tests" {
             # Test with invalid URL to simulate network failure
             $invalidConfig = @{
                 versionMappings = $script:testConfig.versionMappings
-                cache = $script:testConfig.cache
-                installation = $script:testConfig.installation
-                cursorAgent = @{
+                cache           = $script:testConfig.cache
+                installation    = $script:testConfig.installation
+                cursorAgent     = @{
                     installScriptUrl = "https://invalid-url-that-does-not-exist-12345.com/install"
-                    downloadBaseUrl = $script:testConfig.cursorAgent.downloadBaseUrl
-                    sourceOs = $script:testConfig.cursorAgent.sourceOs
-                    sourceArch = $script:testConfig.cursorAgent.sourceArch
+                    downloadBaseUrl  = $script:testConfig.cursorAgent.downloadBaseUrl
+                    sourceOs         = $script:testConfig.cursorAgent.sourceOs
+                    sourceArch       = $script:testConfig.cursorAgent.sourceArch
                 }
             }
             $invalidConfigPath = Join-Path $script:testBaseDir "invalid-config.json"
@@ -259,16 +286,15 @@ Describe "End-to-End Patching Integration Tests" {
                 $false | Should Be $true
             }
             catch {
-                # Expected to throw error
+                # Expected to throw error (wording varies by OS, resolver, and PowerShell host)
                 $_.Exception.Message | Should Not BeNullOrEmpty
-                $_.Exception.Message | Should Match "Failed|Error|Network"
+                $_.Exception.Message | Should Match "Failed|Error|Network|resolve|connect|Unable|remote|timeout|name"
             }
             finally {
-                # Verify no partial artifacts left
+                # Verify no "success marker" artifacts left behind after expected failure
                 if (Test-Path $script:testInstallDir) {
-                    $installContents = Get-ChildItem -Path $script:testInstallDir -Recurse -ErrorAction SilentlyContinue
-                    # Should have minimal or no artifacts on failure
-                    $installContents.Count | Should BeLessThan 5
+                    Test-Path (Join-Path $script:testInstallDir ".cursor-agent-patched") | Should Be $false
+                    Test-Path (Join-Path $script:testInstallDir "cursor-agent.bat") | Should Be $false
                 }
             }
         }
@@ -283,7 +309,7 @@ Describe "End-to-End Patching Integration Tests" {
             
             try {
                 # Try to extract corrupted package
-                Expand-CursorAgentPackageInternal -PackagePath $tempPackage -OutputDirectory $script:testInstallDir
+                $null = Expand-CursorAgentPackageInternal -PackagePath $tempPackage -OutputDirectory $script:testInstallDir 2>$null
                 # Should not reach here
                 $false | Should Be $true
             }

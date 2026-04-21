@@ -1,3 +1,7 @@
+> lol turns out cursor came out with a first party win32 version and i didn't notice: https://cursor.com/docs/cli/installation#windows-native ; here's a side by side ( left: native; right: darwin patched for win32-64 )
+
+![Cursor native Windows vs patched Darwin package](./cursor-windows-patcher-native-vs-patched.png)
+
 # Cursor Agent Windows Patcher
 
 Automatically patches the Cursor Agent CLI package (designed for macOS) to run on Windows by replacing native dependencies with Windows-compatible versions.
@@ -5,17 +9,17 @@ Automatically patches the Cursor Agent CLI package (designed for macOS) to run o
 ## Features
 
 - **Automatic version detection** from official install script
-- **Downloads Windows-native binaries** for dependencies (sqlite3, merkle-tree, ripgrep)
+- **Downloads Windows-native binaries** for dependencies (sqlite3, merkle-tree, pty, node runtime, ripgrep)
 - **Patches platform detection code** to support Windows
 - **Creates launcher scripts** with update interception support
 - **Caches binaries** for faster subsequent runs
 - **In-place patching** for existing installations
-- **Automatic update patching** intercepts cursor-agent update commands
+- **Automatic update patching** via `.\patch-cursor-agent.ps1 -Update`
 
 ## Prerequisites
 
 - **PowerShell 5.1 or later** (included with Windows 10+)
-- **Bun** (preferred) or **Node.js** (required for Cursor Agent CLI)
+- **Node.js** (required for Cursor Agent CLI)
 - **7-Zip** (optional, for better archive extraction support in PowerShell 5.1)
 
 ## Installation
@@ -28,7 +32,7 @@ Automatically patches the Cursor Agent CLI package (designed for macOS) to run o
 
 2. Ensure prerequisites are installed:
    - PowerShell 5.1 or later (check with `$PSVersionTable.PSVersion`)
-   - Bun (preferred) or Node.js
+   - Node.js
    - 7-Zip (optional, for better archive extraction)
 
 3. Review and customize `patcher-config.json` if needed (defaults work for most users)
@@ -43,7 +47,7 @@ Automatically patches the Cursor Agent CLI package (designed for macOS) to run o
 .\patch-cursor-agent.ps1 -Version "2026.01.23-916f423"
 
 # Patch existing installation
-.\patch-cursor-agent.ps1 -PatchExistingInstallation -InstallPath "C:\Users\You\AppData\Local\cursor-agent"
+.\patch-cursor-agent.ps1 -PatchExistingInstallation "C:\Users\You\AppData\Local\cursor-agent\versions\2026.04.17-787b533"
 ```
 
 ## Usage Examples
@@ -71,7 +75,7 @@ Download, patch, and install Cursor Agent:
 If you already have Cursor Agent installed:
 
 ```powershell
-.\patch-cursor-agent.ps1 -PatchExistingInstallation -InstallPath "C:\path\to\cursor-agent"
+.\patch-cursor-agent.ps1 -PatchExistingInstallation "C:\path\to\cursor-agent\versions\2026.04.17-787b533"
 ```
 
 This will:
@@ -100,15 +104,12 @@ Preview what would happen without making changes:
 
 Shows detailed output of all operations without executing them.
 
-### Using Custom Dependency Versions
+### Using Custom Config
 
-Override default dependency versions:
+Use an alternate configuration file:
 
 ```powershell
-.\patch-cursor-agent.ps1 `
-    -Sqlite3Version "5.1.7" `
-    -MerkleTreeVersion "1.2.3" `
-    -Version "2026.01.23-916f423"
+.\patch-cursor-agent.ps1 -ConfigPath ".\custom-patcher-config.json"
 ```
 
 ## Configuration
@@ -128,14 +129,14 @@ Maps Cursor Agent dependency versions to Windows binary sources:
       "5.1.7": {
         "windowsBinary": {
           "repo": "TryGhost/node-sqlite3",
-          "assetPattern": ".*windows.*node_sqlite3.*\\.node",
+          "assetPattern": "sqlite3-v5\\.1\\.7-napi-v6-win32-x64\\.tar\\.gz",
           "releaseTag": "v5.1.7"
         }
       },
       "default": {
         "windowsBinary": {
           "repo": "TryGhost/node-sqlite3",
-          "assetPattern": ".*windows.*node_sqlite3.*\\.node",
+          "assetPattern": "sqlite3-.*-napi-v6-win32-x64\\.tar\\.gz",
           "releaseTag": "latest"
         }
       }
@@ -144,7 +145,7 @@ Maps Cursor Agent dependency versions to Windows binary sources:
       "default": {
         "windowsBinary": {
           "repo": "btc-vision/rust-merkle-tree",
-          "assetPattern": "merkle-tree-napi\\.win32-x64-msvc\\.node",
+          "assetPattern": "rust-merkle-tree\\.win32-x64-msvc\\.node",
           "releaseTag": "latest"
         }
       }
@@ -189,8 +190,8 @@ Cursor Agent source configuration:
 
 ### Environment Variables
 
-- `CURSOR_AGENT_CONFIG_PATH`: Override path to `patcher-config.json`
-- `CURSOR_AGENT_INSTALL_PATH`: Override default installation path
+No environment variables are required for normal usage. Use explicit script parameters like
+`-ConfigPath`, `-InstallPath`, and `-Version` to control behavior.
 
 ## API Reference
 
@@ -221,18 +222,19 @@ Extracts version string from Cursor Agent install script.
 
 **Syntax**:
 ```powershell
-Get-CursorAgentVersion [-InstallScript <String>]
+Get-CursorAgentVersion -InstallScript <String>
 ```
 
 **Parameters**:
-- `InstallScript`: Install script content (default: fetches from cursor.com)
+- `InstallScript`: Install script content (required input)
 
 **Returns**: Version string (format: `YYYY.MM.DD-hash`)
 
 **Example**:
 ```powershell
 Import-Module .\CursorAgentPatcher.psm1
-$version = Get-CursorAgentVersion
+$installScript = (Invoke-WebRequest -Uri "https://cursor.com/install" -UseBasicParsing).Content
+$version = Get-CursorAgentVersion -InstallScript $installScript
 # Returns: "2026.01.23-916f423"
 ```
 
@@ -245,21 +247,19 @@ Main patching workflow function.
 Invoke-CursorAgentPatch `
     [-Version <String>] `
     [-InstallPath <String>] `
-    [-Sqlite3Version <String>] `
-    [-MerkleTreeVersion <String>] `
+    [-ConfigPath <String>] `
     [-WhatIf] `
     [-Force] `
-    [-PatchExistingInstallation]
+    [-PatchExistingInstallation <String>]
 ```
 
 **Parameters**:
 - `Version`: Cursor Agent version to patch (default: latest from install script)
 - `InstallPath`: Installation directory (default: from config)
-- `Sqlite3Version`: Override SQLite3 version
-- `MerkleTreeVersion`: Override Merkle Tree version
+- `ConfigPath`: Path to configuration file
 - `WhatIf`: Preview changes without applying
 - `Force`: Re-patch even if already patched
-- `PatchExistingInstallation`: Patch existing installation instead of downloading
+- `PatchExistingInstallation`: Path to existing installation to patch in-place
 
 **Returns**: Hashtable with result summary
 
@@ -281,13 +281,15 @@ Creates launcher script for patched installation.
 New-CursorAgentLauncher `
     [-InstallPath <String>] `
     [-LauncherName <String>] `
-    [-InterceptUpdates]
+    [-RealCursorAgentPath <String>] `
+    [-EnableUpdateInterception]
 ```
 
 **Parameters**:
 - `InstallPath`: Installation directory
 - `LauncherName`: Name of launcher script (default: `cursor-agent.bat`)
-- `InterceptUpdates`: Enable update interception (default: `false`)
+- `RealCursorAgentPath`: Optional passthrough executable path used in interception mode
+- `EnableUpdateInterception`: Enable update interception (default: `false`)
 
 **Returns**: Path to created launcher script
 
@@ -323,14 +325,14 @@ Intercepts cursor-agent update commands and automatically patches new versions.
 ```powershell
 Invoke-CursorAgentUpdateWithPatch `
     [-UpdateArguments <String[]>] `
-    [-WhatIf] `
     [-Force]
 ```
 
 **Parameters**:
 - `UpdateArguments`: Arguments to pass to cursor-agent update command
-- `WhatIf`: Preview changes without applying
 - `Force`: Re-patch even if already patched
+
+`Invoke-CursorAgentUpdateWithPatch` also supports the common PowerShell `-WhatIf` parameter.
 
 **Returns**: Hashtable with update and patch results
 
@@ -478,6 +480,16 @@ Run the test suite:
 ```powershell
 # Run all tests (requires Pester)
 Invoke-Pester
+
+# Run integration tests with critical fail-fast gate first
+.\tests\integration\run-end-to-end-failfast.ps1
+
+# Run compatibility matrix (current install-script version by default)
+Invoke-Pester -Path tests/integration/version-compatibility.tests.ps1
+
+# Run compatibility matrix for explicit older/newer versions
+$env:COMPAT_MATRIX_VERSIONS = "2026.01.23-916f423,2026.04.17-787b533"
+Invoke-Pester -Path tests/integration/version-compatibility.tests.ps1
 
 # Run specific test categories
 Invoke-Pester -Path tests/properties/

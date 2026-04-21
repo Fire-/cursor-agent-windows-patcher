@@ -11,7 +11,7 @@
 - What the project does
 - Why it exists (Windows compatibility for macOS package)
 - Key features
-- Prerequisites (PowerShell 5.1+, Bun/Node.js, optional 7-Zip)
+- Prerequisites (PowerShell 5.1+, Node.js, optional 7-Zip)
 
 **Example**:
 ```markdown
@@ -47,7 +47,7 @@ Automatically patches the Cursor Agent CLI package (designed for macOS) to run o
 
 2. Ensure prerequisites are installed:
    - PowerShell 5.1 or later
-   - Bun (preferred) or Node.js
+   - Node.js
    - 7-Zip (optional, for better archive extraction)
 
 3. Review and customize `patcher-config.json` if needed

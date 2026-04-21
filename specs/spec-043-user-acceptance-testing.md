@@ -7,7 +7,7 @@
 ### Prerequisites
 - [ ] Clean Windows system (or VM)
 - [ ] PowerShell 5.1 or later
-- [ ] Bun installed (or Node.js as fallback)
+- [ ] Node.js installed
 - [ ] 7-Zip installed (optional but recommended)
 - [ ] Internet connection
 - [ ] Sufficient disk space (at least 500MB free)
@@ -41,7 +41,7 @@
 - [ ] Progress indicators show download/extraction progress
 - [ ] Installation directory created with correct structure
 - [ ] Launcher script exists and is executable
-- [ ] Cursor Agent starts (may fail later due to missing Bun/Node, but should get past initial load)
+- [ ] Cursor Agent starts (may fail later due to missing Node.js, but should get past initial load)
 - [ ] Cache directory contains downloaded binaries
 - [ ] Patch state marker file exists
 

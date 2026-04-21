@@ -4,14 +4,14 @@
       "5.1.7": {
         "windowsBinary": {
           "repo": "TryGhost/node-sqlite3",
-          "assetPattern": ".*windows.*node_sqlite3.*\\.node",
+          "assetPattern": "sqlite3-v5\\.1\\.7-napi-v6-win32-x64\\.tar\\.gz",
           "releaseTag": "v5.1.7"
         }
       },
       "default": {
         "windowsBinary": {
           "repo": "TryGhost/node-sqlite3",
-          "assetPattern": ".*windows.*node_sqlite3.*\\.node",
+          "assetPattern": "sqlite3-.*-napi-v6-win32-x64\\.tar\\.gz",
           "releaseTag": "latest"
         }
       }
@@ -20,7 +20,7 @@
       "default": {
         "windowsBinary": {
           "repo": "btc-vision/rust-merkle-tree",
-          "assetPattern": "merkle-tree-napi\\.win32-x64-msvc\\.node",
+          "assetPattern": "rust-merkle-tree\\.win32-x64-msvc\\.node",
           "releaseTag": "latest"
         }
       }

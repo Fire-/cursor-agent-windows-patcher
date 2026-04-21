@@ -14,6 +14,9 @@ Cursor Agent version to download and patch. If not provided, will be auto-detect
 .PARAMETER InstallPath
 Installation path for the patched package. Defaults to config value.
 
+.PARAMETER ConfigPath
+Path to patcher-config.json (or alternate JSON). Defaults to Get-PatcherConfig resolution when omitted.
+
 .PARAMETER Sqlite3Version
 Override SQLite3 version (optional).
 
@@ -27,7 +30,7 @@ Path to already-extracted installation. If provided, skips download/extract step
 Re-patch even if installation is already patched.
 
 .PARAMETER Update
-Run cursor-agent update, then patch new version. Requires Spec 37 to be fully functional.
+Run cursor-agent update, then patch new version.
 
 .EXAMPLE
 .\patch-cursor-agent.ps1 -Version "2026.01.23-916f423" -InstallPath "C:\cursor-agent"
@@ -47,25 +50,28 @@ Run cursor-agent update, then patch new version. Requires Spec 37 to be fully fu
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory = $false)]
     [string]$Version,
     
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory = $false)]
     [string]$InstallPath,
     
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory = $false)]
+    [string]$ConfigPath,
+    
+    [Parameter(Mandatory = $false)]
     [string]$Sqlite3Version,
     
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory = $false)]
     [string]$MerkleTreeVersion,
     
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory = $false)]
     [string]$PatchExistingInstallation,
     
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory = $false)]
     [switch]$Force,
     
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory = $false)]
     [switch]$Update
 )
 
@@ -90,14 +96,14 @@ catch {
 # Handle update mode
 if ($Update) {
     try {
-        # Check if Invoke-CursorAgentUpdateWithPatch is available (Spec 037)
+        # Check if Invoke-CursorAgentUpdateWithPatch is available
         if (-not (Get-Command Invoke-CursorAgentUpdateWithPatch -ErrorAction SilentlyContinue)) {
-            Write-Error "patch-cursor-agent.ps1: Update mode requires Spec 037 (Invoke-CursorAgentUpdateWithPatch) to be implemented."
+            Write-Error "patch-cursor-agent.ps1: Update mode requires Invoke-CursorAgentUpdateWithPatch from CursorAgentPatcher."
             Write-Host "Please use standard patching mode or in-place patching mode instead." -ForegroundColor Yellow
             exit 1
         }
         
-        $result = Invoke-CursorAgentUpdateWithPatch -UpdateArguments @() -WhatIf:$WhatIf -Force:$Force
+        $result = Invoke-CursorAgentUpdateWithPatch -UpdateArguments @() -WhatIf:$WhatIfPreference -Force:$Force
         
         if ($result.UpdateSuccess -and $result.PatchSuccess) {
             Write-Host "Update and patch completed successfully!" -ForegroundColor Green
@@ -122,10 +128,15 @@ if ($Update) {
 # Handle in-place patching mode
 elseif ($PatchExistingInstallation) {
     try {
-        $result = Invoke-CursorAgentPatch `
-            -PatchExistingInstallation $PatchExistingInstallation `
-            -Force:$Force `
-            -WhatIf:$WhatIf
+        $inPlaceParams = @{
+            PatchExistingInstallation = $PatchExistingInstallation
+            Force                       = $Force
+        }
+        if ($WhatIfPreference) { $inPlaceParams['WhatIf'] = $true }
+        if ($PSBoundParameters.ContainsKey('ConfigPath') -and -not [string]::IsNullOrWhiteSpace($ConfigPath)) {
+            $inPlaceParams['ConfigPath'] = $ConfigPath
+        }
+        $result = Invoke-CursorAgentPatch @inPlaceParams
         
         if ($result.Success) {
             Write-Host "Patching completed successfully!" -ForegroundColor Green
@@ -150,10 +161,13 @@ else {
     try {
         # Build parameter hashtable for Invoke-CursorAgentPatch
         $patchParams = @{}
+        if ($WhatIfPreference) { $patchParams['WhatIf'] = $true }
         if ($Version) { $patchParams['Version'] = $Version }
         if ($InstallPath) { $patchParams['InstallPath'] = $InstallPath }
-        if ($WhatIf) { $patchParams['WhatIf'] = $true }
         if ($Force) { $patchParams['Force'] = $true }
+        if ($PSBoundParameters.ContainsKey('ConfigPath') -and -not [string]::IsNullOrWhiteSpace($ConfigPath)) {
+            $patchParams['ConfigPath'] = $ConfigPath
+        }
         
         $result = Invoke-CursorAgentPatch @patchParams
         
