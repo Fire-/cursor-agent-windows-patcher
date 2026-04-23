@@ -504,6 +504,10 @@ Invoke-Pester -Path tests/simulations/
 
 Contributions are welcome! Please see `AGENTS.md` for development guidelines and code style.
 
+By submitting a contribution to this repository, you agree that your contribution
+may be distributed under the repository's public license and may also be included
+in separately licensed commercial versions of the project by the maintainer.
+
 ### Development Setup
 
 1. Clone the repository
@@ -521,7 +525,12 @@ Contributions are welcome! Please see `AGENTS.md` for development guidelines and
 
 ## License
 
-[Specify your license here]
+This project is available under the PolyForm Noncommercial 1.0.0 license. See
+[`LICENSE`](./LICENSE) for the full text.
+
+Commercial use is not granted by the public license. If you want to use this
+project commercially, contact the maintainer to arrange a separate commercial
+license.
 
 ## Acknowledgments
 
